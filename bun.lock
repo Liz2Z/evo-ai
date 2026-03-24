@@ -1,0 +1,26 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "evo-ai",
+      "devDependencies": {
+        "@types/bun": "latest",
+        "typescript": "^5.0.0",
+      },
+    },
+  },
+  "packages": {
+    "@types/bun": ["@types/bun@1.1.6", "http://registry.npm.qima-inc.com/@types/bun/download/@types/bun-1.1.6.tgz", { "dependencies": { "bun-types": "1.1.17" } }, "sha1-kOow+7wDkUhESKzfhJKKufHj9CM="],
+
+    "@types/node": ["@types/node@20.12.14", "http://registry.npm.qima-inc.com/@types/node/download/@types/node-20.12.14.tgz", { "dependencies": { "undici-types": "~5.26.4" } }, "sha1-DFz37yau39ZLBTm7qTgO0fV9zHc="],
+
+    "@types/ws": ["@types/ws@8.5.14", "http://registry.npm.qima-inc.com/@types/ws/download/@types/ws-8.5.14.tgz", { "dependencies": { "@types/node": "*" } }, "sha1-k9RLJoyRJ9lgJs9ENTcl3ZtsPCE="],
+
+    "bun-types": ["bun-types@1.1.17", "http://registry.npm.qima-inc.com/bun-types/download/bun-types-1.1.17.tgz", { "dependencies": { "@types/node": "~20.12.8", "@types/ws": "~8.5.10" } }, "sha1-Wp4boyqw8VbbO02yuyIYe/0AkOY="],
+
+    "typescript": ["typescript@5.9.3", "http://registry.npm.qima-inc.com/typescript/download/typescript-5.9.3.tgz", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha1-W09Z4VMQqxeiFvXWz1PuR27eZw8="],
+
+    "undici-types": ["undici-types@5.26.5", "http://registry.npm.qima-inc.com/undici-types/download/undici-types-5.26.5.tgz", {}, "sha1-vNU5iT0AtW6WT9JlekhmsiGmVhc="],
+  }
+}
