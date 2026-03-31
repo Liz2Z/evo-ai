@@ -3,6 +3,7 @@ import { parseArgs } from 'util';
 import { Master } from './master/scheduler';
 import { loadConfig, saveConfig, loadMasterState, addQuestion, answerQuestion, loadTasks, loadFailedTasks } from './utils/storage';
 import { isGitRepo } from './utils/git';
+import { startTUI } from './tui/index';
 import type { Config, Task } from './types';
 
 const DEFAULT_CONFIG: Config = {
@@ -179,8 +180,27 @@ async function main() {
   // Start master
   await master.start();
 
-  // Keep process alive
-  process.stdin.resume();
+  // Start TUI dashboard
+  const tuiInstance = startTUI({
+    emitter: master,
+    maxConcurrency: config.maxConcurrency,
+    onQuit: async () => {
+      await master.stop();
+    },
+  });
+
+  // Handle signals with TUI cleanup
+  const cleanup = async () => {
+    await master.stop();
+    tuiInstance.unmount();
+    process.exit(0);
+  };
+
+  // Remove earlier signal handlers and replace with unified cleanup
+  process.removeAllListeners('SIGINT');
+  process.removeAllListeners('SIGTERM');
+  process.on('SIGINT', cleanup);
+  process.on('SIGTERM', cleanup);
 }
 
 function printHelp() {

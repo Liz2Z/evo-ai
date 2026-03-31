@@ -93,6 +93,15 @@ export interface HistoryEntry {
   details?: Record<string, unknown>;
 }
 
+// Log entry
+export interface LogEntry {
+  timestamp: string;
+  slaveId: string;
+  taskId?: string;
+  level: 'info' | 'error' | 'debug';
+  message: string;
+}
+
 // Config
 export interface Config {
   mission: string;

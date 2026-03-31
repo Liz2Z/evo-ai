@@ -1,5 +1,6 @@
+import { EventEmitter } from 'events';
 import type { Task, Config, MasterState, ReviewResult, TaskResult } from '../types';
-import { 
+import {
   loadTasks, saveTasks, updateTask, addTask,
   loadMasterState, saveMasterState,
   loadSlaves, saveSlaves,
@@ -8,8 +9,9 @@ import {
 } from '../utils/storage';
 import { getDevelopBranch, mergeBranch, deleteBranch, removeWorktree, getDiff } from '../utils/git';
 import { runInspector, runWorker, runReviewer } from '../slave/launcher';
+import type { HeartbeatTickEvent, TaskStatusChangeEvent } from '../types/events';
 
-export class Master {
+export class Master extends EventEmitter {
   private config: Config;
   private state: MasterState;
   private activeSlaves: number = 0;
@@ -18,6 +20,7 @@ export class Master {
   private tickPromise: Promise<void> | null = null;
 
   constructor(config: Config) {
+    super();
     this.config = config;
     this.state = {
       mission: config.mission,
@@ -86,6 +89,17 @@ export class Master {
     if (this.isPaused) return;
 
     this.state.lastHeartbeat = new Date().toISOString();
+
+    const tasks = await loadTasks();
+    const pendingCount = tasks.filter(t => t.status === 'pending').length;
+
+    this.emit('heartbeat', {
+      timestamp: this.state.lastHeartbeat,
+      phase: this.state.currentPhase,
+      activeSlaves: this.activeSlaves,
+      pendingCount,
+    } satisfies HeartbeatTickEvent);
+
     console.log(`\n[${new Date().toISOString()}] Heartbeat tick`);
 
     try {
@@ -204,8 +218,14 @@ export class Master {
 
   private async assignWorker(task: Task): Promise<void> {
     console.log(`Assigning worker to task ${task.id}`);
-    
+
     await updateTask(task.id, { status: 'assigned' });
+    this.emit('task:status_change', {
+      taskId: task.id,
+      fromStatus: task.status,
+      toStatus: 'assigned',
+      task,
+    } satisfies TaskStatusChangeEvent);
     this.activeSlaves++;
 
     const recentDecisions = await this.getRecentDecisions();
@@ -230,11 +250,18 @@ export class Master {
 
   private async handleWorkerResult(task: Task, result: TaskResult): Promise<void> {
     if (result.status === 'completed') {
+      const newStatus = 'reviewing' as const;
       await updateTask(task.id, {
-        status: 'reviewing',
+        status: newStatus,
         worktree: result.worktree,
         branch: result.branch,
       });
+      this.emit('task:status_change', {
+        taskId: task.id,
+        fromStatus: 'assigned',
+        toStatus: newStatus,
+        task: { ...task, status: newStatus, worktree: result.worktree, branch: result.branch },
+      } satisfies TaskStatusChangeEvent);
       
       await addHistoryEntry({
         timestamp: new Date().toISOString(),
@@ -244,7 +271,14 @@ export class Master {
         details: { filesChanged: result.filesChanged },
       });
     } else {
-      await updateTask(task.id, { status: 'failed' });
+      const newStatus = 'failed' as const;
+      await updateTask(task.id, { status: newStatus });
+      this.emit('task:status_change', {
+        taskId: task.id,
+        fromStatus: 'assigned',
+        toStatus: newStatus,
+        task: { ...task, status: newStatus },
+      } satisfies TaskStatusChangeEvent);
     }
   }
 
@@ -305,28 +339,48 @@ export class Master {
     };
 
     if (result.verdict === 'approve') {
+      const newStatus = 'approved' as const;
       await updateTask(task.id, {
-        status: 'approved',
+        status: newStatus,
         attemptCount: task.attemptCount + 1,
         reviewHistory: [...task.reviewHistory, reviewEntry],
       });
+      this.emit('task:status_change', {
+        taskId: task.id,
+        fromStatus: 'reviewing',
+        toStatus: newStatus,
+        task,
+      } satisfies TaskStatusChangeEvent);
     } else if (result.verdict === 'reject' || task.attemptCount + 1 >= task.maxAttempts) {
+      const newStatus = 'rejected' as const;
       await updateTask(task.id, {
-        status: 'rejected',
+        status: newStatus,
         attemptCount: task.attemptCount + 1,
         reviewHistory: [...task.reviewHistory, reviewEntry],
       });
+      this.emit('task:status_change', {
+        taskId: task.id,
+        fromStatus: 'reviewing',
+        toStatus: newStatus,
+        task,
+      } satisfies TaskStatusChangeEvent);
     } else {
       // Request changes - reassign to new worker
       const newAttemptCount = task.attemptCount + 1;
       const additionalContext = this.buildRetryContext(result);
-      
+
       await updateTask(task.id, {
         status: 'pending',
         attemptCount: newAttemptCount,
         context: task.context ? `${task.context}\n\n${additionalContext}` : additionalContext,
         reviewHistory: [...task.reviewHistory, reviewEntry],
       });
+      this.emit('task:status_change', {
+        taskId: task.id,
+        fromStatus: 'reviewing',
+        toStatus: 'pending',
+        task,
+      } satisfies TaskStatusChangeEvent);
     }
   }
 
@@ -378,9 +432,21 @@ export class Master {
 
         // Mark as completed
         await updateTask(task.id, { status: 'completed' });
+        this.emit('task:status_change', {
+          taskId: task.id,
+          fromStatus: 'approved',
+          toStatus: 'completed',
+          task,
+        } satisfies TaskStatusChangeEvent);
       } else {
         console.error(`Merge failed for task ${task.id}: ${result.message}`);
         await updateTask(task.id, { status: 'failed' });
+        this.emit('task:status_change', {
+          taskId: task.id,
+          fromStatus: 'approved',
+          toStatus: 'failed',
+          task,
+        } satisfies TaskStatusChangeEvent);
       }
     }
   }

@@ -3,7 +3,7 @@ import { mkdir } from 'fs/promises';
 import { join, dirname } from 'path';
 import type { Task, SlaveInfo, MasterState, HistoryEntry, Config, Question } from '../types';
 
-const DATA_DIR = join(process.cwd(), 'data');
+const DATA_DIR = process.env.DATA_DIR || join(process.cwd(), 'data');
 
 async function ensureDir(path: string) {
   if (!existsSync(path)) {

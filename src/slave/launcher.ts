@@ -1,8 +1,11 @@
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { readFileSync } from 'fs';
-import type { SlaveType, SlaveInfo, Task, TaskResult, ReviewResult } from '../types';
+import { query } from '@anthropic-ai/claude-agent-sdk';
+import type { SlaveType, Task, TaskResult, ReviewResult } from '../types';
 import { addHistoryEntry, updateSlave } from '../utils/storage';
-import { createWorktree, getDiff, getChangedFiles, removeWorktree } from '../utils/git';
+import { createWorktree, getDiff, getChangedFiles } from '../utils/git';
+import { SlaveLogger } from '../utils/logger';
+import type { LogMessageEvent } from '../types/events';
 
 const PROMPTS_DIR = join(import.meta.dir, 'prompts');
 
@@ -19,6 +22,30 @@ function generateSlaveId(type: SlaveType): string {
   return `${type}-${generateTaskId()}`;
 }
 
+// Load .env file and return env vars for SDK
+function getEnvConfig(): Record<string, string | undefined> {
+  // 优先使用 ENV_FILE 环境变量指定的文件，其次 .env.test（测试模式），最后 .env
+  const envFile = process.env.ENV_FILE || (process.env.NODE_ENV === 'test' ? '.env.test' : '.env');
+  const envPath = join(process.cwd(), envFile);
+  const env: Record<string, string | undefined> = { ...process.env as Record<string, string | undefined> };
+
+  try {
+    const content = readFileSync(envPath, 'utf-8');
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const match = trimmed.match(/^(\w+)="?(.+?)"?$/);
+      if (match) {
+        env[match[1]] = match[2];
+      }
+    }
+  } catch {
+    // .env file not found, use process.env
+  }
+
+  return env;
+}
+
 export interface SlaveOptions {
   type: SlaveType;
   task: Task;
@@ -27,6 +54,8 @@ export interface SlaveOptions {
   additionalContext?: string;
   worktreePath?: string;
   baseBranch?: string;
+  logger?: SlaveLogger;
+  onLog?: (event: LogMessageEvent) => void;
 }
 
 export class SlaveLauncher {
@@ -35,15 +64,35 @@ export class SlaveLauncher {
   private task: Task;
   private worktreePath: string | null = null;
   private branch: string | null = null;
+  private logger?: SlaveLogger;
+  private onLog?: (event: LogMessageEvent) => void;
 
   constructor(private options: SlaveOptions) {
     this.slaveId = generateSlaveId(options.type);
     this.type = options.type;
     this.task = options.task;
+    this.logger = options.logger;
+    this.onLog = options.onLog;
   }
 
-  async start(): Promise<{ slaveId: string; pid?: number }> {
-    // Register slave
+  private log(level: 'info' | 'error' | 'debug', message: string): void {
+    const event: LogMessageEvent = {
+      slaveId: this.slaveId,
+      taskId: this.task.id,
+      level,
+      message,
+      timestamp: new Date().toISOString(),
+    };
+    if (this.logger) {
+      if (level === 'error') this.logger.error(message);
+      else this.logger.info(message);
+    }
+    if (this.onLog) {
+      this.onLog(event);
+    }
+  }
+
+  async start(): Promise<{ slaveId: string }> {
     await updateSlave(this.slaveId, {
       id: this.slaveId,
       type: this.type,
@@ -59,28 +108,80 @@ export class SlaveLauncher {
     try {
       const basePrompt = loadPrompt(this.type);
       const contextPrompt = this.buildContextPrompt();
-      const fullPrompt = `${basePrompt}\n\n${contextPrompt}`;
+      const fullSystemPrompt = `${basePrompt}\n\n${contextPrompt}`;
 
-      // For worker type, create worktree
-      if (this.type === 'worker') {
-        const baseBranch = this.options.baseBranch || 'develop';
-        const worktreeResult = await createWorktree(this.task, baseBranch);
+      // For worker type, create worktree first
+      if (this.type === 'worker' && this.options.baseBranch) {
+        const worktreeResult = await createWorktree(this.task, this.options.baseBranch);
         if (worktreeResult) {
           this.worktreePath = worktreeResult.path;
           this.branch = worktreeResult.branch;
         }
       }
 
-      // Execute slave using pi CLI
-      const result = await this.runPiCommand(fullPrompt);
+      // Execute using Claude Agent SDK
+      this.log('info', `Starting ${this.type} slave ${this.slaveId}...`);
+      console.log(`Starting ${this.type} slave ${this.slaveId}...`);
+
+      const workingDir = this.worktreePath || this.options.worktreePath || process.cwd();
+
+      // Build the task prompt
+      const taskPrompt = this.buildTaskPrompt();
+
+      // Get env config from .env file
+      const envConfig = getEnvConfig();
+
+      // Map .env vars to SDK expected env vars
+      const sdkEnv: Record<string, string | undefined> = {
+        ...envConfig,
+        // Map API_KEY to ANTHROPIC_API_KEY if not already set
+        ANTHROPIC_API_KEY: envConfig.ANTHROPIC_API_KEY || envConfig.API_KEY,
+        // Map BASE_URL to ANTHROPIC_BASE_URL if not already set
+        ANTHROPIC_BASE_URL: envConfig.ANTHROPIC_BASE_URL || envConfig.BASE_URL,
+      };
+
+      // Run query using Claude Agent SDK
+      let output = '';
+      const q = query({
+        prompt: taskPrompt,
+        options: {
+          systemPrompt: fullSystemPrompt,
+          cwd: resolve(workingDir),
+          env: sdkEnv,
+          permissionMode: 'bypassPermissions',
+          allowDangerouslySkipPermissions: true,
+          maxTurns: this.type === 'inspector' ? 10 : 20,
+        },
+      });
+
+      for await (const message of q) {
+        if (message.type === 'result') {
+          if (message.subtype === 'success') {
+            output = message.result;
+          } else {
+            const errMsg = (message as any).errors?.join('; ') || 'Unknown error';
+            this.log('error', `Slave ${this.slaveId} error: ${errMsg}`);
+            console.error(`Slave ${this.slaveId} error:`, (message as any).errors);
+            output = JSON.stringify({
+              status: 'failed',
+              summary: (message as any).errors?.join('; ') || 'Unknown error',
+              filesChanged: [],
+            });
+          }
+        }
+      }
+
+      this.log('info', `${this.type} slave ${this.slaveId} completed`);
+      console.log(`${this.type} slave ${this.slaveId} completed`);
 
       // Process result based on type
       if (this.type === 'reviewer') {
-        return this.parseReviewResult(result);
+        return this.parseReviewResult(output);
       } else {
-        return await this.parseTaskResult(result);
+        return await this.parseTaskResult(output);
       }
     } catch (error) {
+      this.log('error', `Slave ${this.slaveId} failed: ${error}`);
       console.error(`Slave ${this.slaveId} failed:`, error);
       await addHistoryEntry({
         timestamp: new Date().toISOString(),
@@ -121,29 +222,14 @@ export class SlaveLauncher {
     return context;
   }
 
-  private async runPiCommand(prompt: string): Promise<string> {
-    const args = ['-p', prompt];
-
-    // Run in worktree if available
-    const cwd = this.worktreePath || process.cwd();
-
-    console.log(`Starting slave ${this.slaveId} in ${cwd}...`);
-
-    const proc = Bun.spawnSync(['pi', ...args], {
-      cwd,
-      stdout: 'pipe',
-      stderr: 'pipe',
-      timeout: 600000, // 10 minute timeout
-      maxBuffer: 1024 * 1024 * 10, // 10MB buffer
-    });
-
-    if (proc.exitCode !== 0) {
-      const error = proc.stderr.toString();
-      console.error(`pi command failed: ${error}`);
-      throw new Error(`pi command exited with code ${proc.exitCode}: ${error}`);
+  private buildTaskPrompt(): string {
+    if (this.type === 'inspector') {
+      return `Please scan the codebase and identify issues or improvements. Output your findings as a JSON array of tasks.`;
+    } else if (this.type === 'reviewer') {
+      return `Please review the code changes and provide your assessment in the specified JSON format.`;
+    } else {
+      return `Please complete the assigned task. When done, provide a summary of what was done.`;
     }
-
-    return proc.stdout.toString();
   }
 
   private async parseTaskResult(output: string): Promise<TaskResult> {
@@ -166,7 +252,7 @@ export class SlaveLauncher {
       // JSON parsing failed, use raw output
     }
 
-    // Get actual diff from git
+    // Get actual diff from git for worker tasks
     let diff = '';
     let filesChanged: string[] = [];
     if (this.worktreePath && this.branch) {
@@ -181,7 +267,7 @@ export class SlaveLauncher {
       worktree: this.worktreePath || '',
       branch: this.branch || '',
       diff,
-      summary: output.slice(-1000), // Last 1000 chars
+      summary: output.slice(-1000),
       filesChanged,
     };
   }
@@ -223,16 +309,12 @@ export class SlaveLauncher {
   }
 
   async cancel(): Promise<void> {
-    // For workers, we might want to clean up worktree
-    // but keeping it for now so we can review the partial work
     await this.cleanup();
   }
 }
 
 // Convenience functions
 export async function runInspector(mission: string, recentDecisions: string[]): Promise<Task[]> {
-  const slaveId = generateSlaveId('inspector');
-  
   const inspectorTask: Task = {
     id: 'inspection',
     type: 'other',
@@ -256,11 +338,7 @@ export async function runInspector(mission: string, recentDecisions: string[]): 
   await launcher.start();
   const result = await launcher.execute();
 
-  if (result && 'tasks' in result) {
-    return (result as unknown as { tasks: Task[] }).tasks;
-  }
-
-  // Try to parse tasks from output
+  // Parse tasks from inspector output
   if (result && 'summary' in result) {
     try {
       const parsed = JSON.parse(result.summary);
@@ -268,7 +346,7 @@ export async function runInspector(mission: string, recentDecisions: string[]): 
         return parsed.tasks.map((t: Partial<Task>) => ({
           id: generateTaskId(),
           type: t.type || 'other',
-          status: 'pending',
+          status: 'pending' as const,
           priority: t.priority || 3,
           description: t.description || '',
           context: t.context,
@@ -280,7 +358,30 @@ export async function runInspector(mission: string, recentDecisions: string[]): 
         }));
       }
     } catch {
-      // Not valid JSON
+      // Try to find tasks in the raw output
+      const taskMatch = result.summary.match(/"tasks"\s*:\s*\[[\s\S]*?\]/);
+      if (taskMatch) {
+        try {
+          const tasksJson = JSON.parse(`{${taskMatch[0]}}`);
+          if (Array.isArray(tasksJson.tasks)) {
+            return tasksJson.tasks.map((t: Partial<Task>) => ({
+              id: generateTaskId(),
+              type: t.type || 'other',
+              status: 'pending' as const,
+              priority: t.priority || 3,
+              description: t.description || '',
+              context: t.context,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+              attemptCount: 0,
+              maxAttempts: 3,
+              reviewHistory: [],
+            }));
+          }
+        } catch {
+          // Not valid JSON
+        }
+      }
     }
   }
 
