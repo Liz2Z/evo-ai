@@ -183,6 +183,7 @@ async function main() {
   // Start TUI dashboard
   const tuiInstance = startTUI({
     emitter: master,
+    master,
     maxConcurrency: config.maxConcurrency,
     onQuit: async () => {
       await master.stop();
