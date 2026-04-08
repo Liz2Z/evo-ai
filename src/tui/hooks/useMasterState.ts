@@ -5,11 +5,13 @@ import type {
   HeartbeatTickEvent,
   TaskStatusChangeEvent,
   LogMessageEvent,
+  MasterStateEvent,
 } from '../../types/events';
 import {
   loadTasks,
   loadSlaves,
   loadMasterState as loadState,
+  getProjectionEmitter,
 } from '../../utils/storage';
 import { getGlobalLogBuffer } from '../../utils/logger';
 
@@ -47,6 +49,10 @@ export function useMasterState(emitter: EventEmitter | null): MasterStateData & 
       setTasks(loadedTasks);
       setSlaves(loadedSlaves);
       setMasterState(loadedState);
+      setPhase(loadedState.currentPhase || 'initializing');
+      setLastHeartbeat(loadedState.lastHeartbeat || '');
+      setActiveSlaves(loadedSlaves.filter(s => s.status === 'busy').length);
+      setPendingCount(loadedTasks.filter(t => t.status === 'pending').length);
     } catch {
       // State files may not exist yet
     }
@@ -56,10 +62,19 @@ export function useMasterState(emitter: EventEmitter | null): MasterStateData & 
     // Initial poll
     pollState();
 
+    const projectionEmitter = getProjectionEmitter();
+    const onProjectionUpdated = () => {
+      pollState();
+    };
+    projectionEmitter.on('projection:updated', onProjectionUpdated);
+
     // Poll every 3 seconds as reconciliation
     const pollInterval = setInterval(pollState, 3000);
 
-    return () => clearInterval(pollInterval);
+    return () => {
+      clearInterval(pollInterval);
+      projectionEmitter.off('projection:updated', onProjectionUpdated);
+    };
   }, [pollState]);
 
   useEffect(() => {
@@ -78,6 +93,12 @@ export function useMasterState(emitter: EventEmitter | null): MasterStateData & 
       );
       // Also refresh from disk on significant changes
       pollState();
+    };
+
+    const onMasterState = (event: MasterStateEvent) => {
+      setPhase(event.phase);
+      setLastHeartbeat(event.lastHeartbeat);
+      setMasterState(prev => prev ? { ...prev, currentPhase: event.phase, mission: event.mission, lastHeartbeat: event.lastHeartbeat } : prev);
     };
 
     const onLogMessage = (event: LogMessageEvent) => {
@@ -99,11 +120,13 @@ export function useMasterState(emitter: EventEmitter | null): MasterStateData & 
 
     emitter.on('heartbeat', onHeartbeat);
     emitter.on('task:status_change', onTaskChange);
+    emitter.on('master:state', onMasterState);
     emitter.on('log:message', onLogMessage);
 
     return () => {
       emitter.off('heartbeat', onHeartbeat);
       emitter.off('task:status_change', onTaskChange);
+      emitter.off('master:state', onMasterState);
       emitter.off('log:message', onLogMessage);
     };
   }, [emitter, pollState]);

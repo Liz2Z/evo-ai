@@ -1,15 +1,21 @@
 import { EventEmitter } from 'events';
+import { existsSync, unlinkSync, writeFileSync, readFileSync } from 'fs';
+import { join } from 'path';
 import type { Task, Config, MasterState, ReviewResult, TaskResult } from '../types';
 import {
   loadTasks, saveTasks, updateTask, addTask,
   loadMasterState, saveMasterState,
   loadSlaves, saveSlaves,
   addHistoryEntry, loadHistory,
-  loadConfig, addFailedTask
+  loadConfig, addFailedTask, loadFailedTasks
 } from '../utils/storage';
-import { getDevelopBranch, mergeBranch, deleteBranch, removeWorktree, getDiff } from '../utils/git';
+import { getDevelopBranch, mergeBranch, deleteBranch, removeWorktree, getDiff, listWorktrees } from '../utils/git';
 import { runInspector, runWorker, runReviewer } from '../slave/launcher';
-import type { HeartbeatTickEvent, TaskStatusChangeEvent } from '../types/events';
+import type { HeartbeatTickEvent, TaskStatusChangeEvent, MasterStateEvent } from '../types/events';
+
+const CONTROL_DIR = join(process.cwd(), 'data');
+const CONTROL_FILE = join(CONTROL_DIR, 'master-control.json');
+const HEALTH_FILE = join(CONTROL_DIR, 'master-health.json');
 
 export class Master extends EventEmitter {
   private config: Config;
@@ -34,16 +40,23 @@ export class Master extends EventEmitter {
 
   async start(): Promise<void> {
     this.isRunning = true;
-    
+
     // Load saved state
     const savedState = await loadMasterState();
     if (savedState.mission) {
       this.state = { ...savedState, mission: this.config.mission || savedState.mission };
+      this.isPaused = savedState.currentPhase === 'paused';
     }
 
     console.log(`Master starting with mission: ${this.state.mission}`);
     console.log(`Heartbeat interval: ${this.config.heartbeatInterval}ms`);
     console.log(`Max concurrency: ${this.config.maxConcurrency}`);
+
+    // Recover stale runtime state from previous unclean exit
+    await this.recoverStaleRuntimeState();
+
+    // Clean up stale worktrees from previous crashes
+    await this.cleanupStaleWorktrees();
 
     await addHistoryEntry({
       timestamp: new Date().toISOString(),
@@ -51,8 +64,14 @@ export class Master extends EventEmitter {
       summary: `Master started with mission: ${this.state.mission}`,
     });
 
-    // Start heartbeat loop
-    this.scheduleNextTick();
+    // Clear any stale control file
+    this.clearControlFile();
+
+    // Run one tick immediately, then continue heartbeat loop
+    this.tickPromise = this.tick().finally(() => {
+      this.tickPromise = null;
+      this.scheduleNextTick();
+    });
   }
 
   async stop(): Promise<void> {
@@ -63,11 +82,19 @@ export class Master extends EventEmitter {
 
   pause(): void {
     this.isPaused = true;
+    this.state.currentPhase = 'paused';
+    this.writeHealthFile();
+    this.emitMasterState();
     console.log('Master paused');
   }
 
   resume(): void {
     this.isPaused = false;
+    if (this.state.currentPhase === 'paused') {
+      this.state.currentPhase = 'idle';
+    }
+    this.writeHealthFile();
+    this.emitMasterState();
     console.log('Master resumed');
     if (!this.tickPromise) {
       this.scheduleNextTick();
@@ -86,9 +113,19 @@ export class Master extends EventEmitter {
   }
 
   private async tick(): Promise<void> {
-    if (this.isPaused) return;
+    // Check for control commands from CLI
+    this.checkControlFile();
+
+    if (this.isPaused) {
+      // Keep health signal fresh while paused so CLI resume can still reach master
+      this.writeHealthFile();
+      return;
+    }
 
     this.state.lastHeartbeat = new Date().toISOString();
+
+    // Update health file for CLI health check
+    this.writeHealthFile();
 
     const tasks = await loadTasks();
     const pendingCount = tasks.filter(t => t.status === 'pending').length;
@@ -130,7 +167,6 @@ export class Master extends EventEmitter {
       await saveMasterState(this.state);
 
     } catch (error) {
-      console.error('Tick error:', error);
       await addHistoryEntry({
         timestamp: new Date().toISOString(),
         type: 'error',
@@ -305,7 +341,7 @@ export class Master extends EventEmitter {
     
     if (!diff) {
       console.log(`No changes to review for task ${task.id}`);
-      await updateTask(task.id, { status: 'approved' });
+      await this.finalizeTaskWorktree(task, 'approved');
       return;
     }
 
@@ -345,6 +381,7 @@ export class Master extends EventEmitter {
         attemptCount: task.attemptCount + 1,
         reviewHistory: [...task.reviewHistory, reviewEntry],
       });
+      await this.finalizeTaskWorktree(task, newStatus);
       this.emit('task:status_change', {
         taskId: task.id,
         fromStatus: 'reviewing',
@@ -358,6 +395,7 @@ export class Master extends EventEmitter {
         attemptCount: task.attemptCount + 1,
         reviewHistory: [...task.reviewHistory, reviewEntry],
       });
+      await this.finalizeTaskWorktree(task, newStatus);
       this.emit('task:status_change', {
         taskId: task.id,
         fromStatus: 'reviewing',
@@ -425,13 +463,14 @@ export class Master extends EventEmitter {
         });
 
         // Clean up
-        if (task.worktree) {
-          await removeWorktree(task.worktree);
-        }
         await deleteBranch(task.branch);
 
         // Mark as completed
-        await updateTask(task.id, { status: 'completed' });
+        await updateTask(task.id, {
+          status: 'completed',
+          worktree: undefined,
+          branch: undefined,
+        });
         this.emit('task:status_change', {
           taskId: task.id,
           fromStatus: 'approved',
@@ -439,7 +478,12 @@ export class Master extends EventEmitter {
           task,
         } satisfies TaskStatusChangeEvent);
       } else {
-        console.error(`Merge failed for task ${task.id}: ${result.message}`);
+        await addHistoryEntry({
+          timestamp: new Date().toISOString(),
+          type: 'error',
+          taskId: task.id,
+          summary: `Merge failed: ${result.message}`,
+        });
         await updateTask(task.id, { status: 'failed' });
         this.emit('task:status_change', {
           taskId: task.id,
@@ -470,6 +514,20 @@ export class Master extends EventEmitter {
       const remainingTasks = allTasks.filter(t => t.id !== task.id);
       await saveTasks(remainingTasks);
     }
+  }
+
+  private async finalizeTaskWorktree(
+    task: Task,
+    status: Extract<Task['status'], 'approved' | 'failed' | 'rejected'>
+  ): Promise<void> {
+    if (task.worktree) {
+      await removeWorktree(task.worktree);
+    }
+
+    await updateTask(task.id, {
+      status,
+      worktree: undefined,
+    });
   }
 
   private async getRecentDecisions(): Promise<string[]> {
@@ -507,5 +565,130 @@ export class Master extends EventEmitter {
 
   getState(): MasterState {
     return { ...this.state };
+  }
+
+  async setMission(mission: string): Promise<void> {
+    this.state.mission = mission;
+    await saveMasterState(this.state);
+    this.emitMasterState();
+    await addHistoryEntry({
+      timestamp: new Date().toISOString(),
+      type: 'decision',
+      summary: `Mission updated: ${mission}`,
+    });
+  }
+
+  private emitMasterState(): void {
+    this.emit('master:state', {
+      phase: this.state.currentPhase,
+      mission: this.state.mission,
+      lastHeartbeat: this.state.lastHeartbeat,
+    } satisfies MasterStateEvent);
+  }
+
+  // --- Control file communication ---
+
+  private checkControlFile(): void {
+    try {
+      if (!existsSync(CONTROL_FILE)) return;
+      const content = readFileSync(CONTROL_FILE, 'utf-8');
+      const cmd = JSON.parse(content);
+      this.clearControlFile();
+
+      if (cmd.action === 'pause') {
+        this.pause();
+      } else if (cmd.action === 'resume') {
+        this.resume();
+      } else if (cmd.action === 'stop') {
+        this.stop();
+      }
+    } catch {
+      // Invalid control file, ignore and remove
+      this.clearControlFile();
+    }
+  }
+
+  private clearControlFile(): void {
+    try {
+      if (existsSync(CONTROL_FILE)) unlinkSync(CONTROL_FILE);
+    } catch {
+      // ignore
+    }
+  }
+
+  private writeHealthFile(): void {
+    try {
+      writeFileSync(HEALTH_FILE, JSON.stringify({
+        pid: process.pid,
+        phase: this.state.currentPhase,
+        isPaused: this.isPaused,
+        activeSlaves: this.activeSlaves,
+        lastHeartbeat: this.state.lastHeartbeat,
+        heartbeatInterval: this.config.heartbeatInterval,
+        timestamp: new Date().toISOString(),
+      }));
+    } catch {
+      // Non-critical: health file is best-effort
+    }
+  }
+
+  // --- Stale worktree cleanup ---
+
+  private async cleanupStaleWorktrees(): Promise<void> {
+    const activeTasks = await loadTasks();
+    const failedTasks = await loadFailedTasks();
+    const activeWorktrees = new Set(
+      activeTasks
+        .filter(t => t.worktree && ['pending', 'assigned', 'running', 'reviewing', 'failed', 'rejected'].includes(t.status))
+        .map(t => t.worktree!)
+    );
+    for (const task of failedTasks) {
+      if (task.worktree) activeWorktrees.add(task.worktree);
+    }
+
+    const allWorktrees = await listWorktrees();
+    const staleWorktrees = allWorktrees.filter(w =>
+      w.includes('.worktrees') && !activeWorktrees.has(w)
+    );
+
+    for (const wt of staleWorktrees) {
+      console.log(`Cleaning up stale worktree: ${wt}`);
+      await removeWorktree(wt);
+    }
+  }
+
+  private async recoverStaleRuntimeState(): Promise<void> {
+    // Reset stale busy slaves to idle
+    const slaves = await loadSlaves();
+    let slaveChanged = false;
+    const recoveredSlaves = slaves.map(s => {
+      if (s.status !== 'busy') return s;
+      slaveChanged = true;
+      return { ...s, status: 'idle' as const, currentTask: undefined };
+    });
+    if (slaveChanged) {
+      await saveSlaves(recoveredSlaves);
+    }
+
+    // Reset stale in-flight tasks to pending so scheduler can re-dispatch
+    const tasks = await loadTasks();
+    let taskChanged = false;
+    const recoveredTasks = tasks.map(t => {
+      if (t.status !== 'assigned' && t.status !== 'running') return t;
+      taskChanged = true;
+      return {
+        ...t,
+        status: 'pending' as const,
+        updatedAt: new Date().toISOString(),
+      };
+    });
+    if (taskChanged) {
+      await saveTasks(recoveredTasks);
+      await addHistoryEntry({
+        timestamp: new Date().toISOString(),
+        type: 'decision',
+        summary: 'Recovered stale runtime state: reset assigned/running tasks and busy slaves',
+      });
+    }
   }
 }

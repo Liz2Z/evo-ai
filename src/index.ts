@@ -1,10 +1,16 @@
 #!/usr/bin/env bun
 import { parseArgs } from 'util';
+import { existsSync, writeFileSync, readFileSync, mkdirSync } from 'fs';
+import { join } from 'path';
 import { Master } from './master/scheduler';
 import { loadConfig, saveConfig, loadMasterState, addQuestion, answerQuestion, loadTasks, loadFailedTasks } from './utils/storage';
 import { isGitRepo } from './utils/git';
 import { startTUI } from './tui/index';
 import type { Config, Task } from './types';
+
+const DATA_DIR = join(process.cwd(), 'data');
+const CONTROL_FILE = join(DATA_DIR, 'master-control.json');
+const HEALTH_FILE = join(DATA_DIR, 'master-health.json');
 
 const DEFAULT_CONFIG: Config = {
   mission: 'Improve code quality and maintainability',
@@ -127,10 +133,20 @@ async function main() {
     config.mission = mission;
   }
   if (interval) {
-    config.heartbeatInterval = parseInt(interval) * 1000;
+    const parsed = parseInt(interval);
+    if (isNaN(parsed) || parsed < 1) {
+      console.error('Error: --interval must be a positive number (seconds).');
+      process.exit(1);
+    }
+    config.heartbeatInterval = parsed * 1000;
   }
   if (concurrency) {
-    config.maxConcurrency = parseInt(concurrency);
+    const parsed = parseInt(concurrency);
+    if (isNaN(parsed) || parsed < 1 || parsed > 20) {
+      console.error('Error: --concurrency must be between 1 and 20.');
+      process.exit(1);
+    }
+    config.maxConcurrency = parsed;
   }
 
   // Save config
@@ -153,13 +169,22 @@ async function main() {
 
   // Handle commands that require running master
   if (values.pause) {
-    // TODO: Communicate with running master via file/state
-    console.log('Pausing master...');
+    if (!await isMasterHealthy()) {
+      console.error('Error: Master is not running.');
+      process.exit(1);
+    }
+    sendControlCommand('pause');
+    console.log('Pause command sent to master.');
     process.exit(0);
   }
 
   if (values.resume) {
-    console.log('Resuming master...');
+    if (!await isMasterHealthy()) {
+      console.error('Error: Master is not running.');
+      process.exit(1);
+    }
+    sendControlCommand('resume');
+    console.log('Resume command sent to master.');
     process.exit(0);
   }
 
@@ -237,20 +262,30 @@ Examples:
 
 async function printStatus() {
   const state = await loadMasterState();
-  const config = await loadConfig();
-  
+  const healthy = await isMasterHealthy();
+
   console.log('\n=== Master Status ===\n');
-  console.log(`Mission: ${state.mission || config.mission}`);
+  console.log(`Running: ${healthy ? 'Yes (PID: ' + (healthy ? getMasterPid() : 'N/A') + ')' : 'No'}`);
+  console.log(`Mission: ${state.mission || (await loadConfig()).mission}`);
   console.log(`Current Phase: ${state.currentPhase}`);
   console.log(`Active Since: ${state.activeSince}`);
   console.log(`Last Heartbeat: ${state.lastHeartbeat || 'Never'}`);
   console.log(`Last Inspection: ${state.lastInspection || 'Never'}`);
-  
+
   if (state.pendingQuestions.length > 0) {
     console.log('\nPending Questions:');
     state.pendingQuestions.forEach(q => {
       console.log(`  [${q.id}] ${q.question}`);
     });
+  }
+}
+
+function getMasterPid(): string {
+  try {
+    const health = JSON.parse(readFileSync(HEALTH_FILE, 'utf-8'));
+    return String(health.pid ?? 'unknown');
+  } catch {
+    return 'unknown';
   }
 }
 
@@ -297,6 +332,36 @@ async function printFailedTasks() {
     }
     console.log('');
   });
+}
+
+function sendControlCommand(action: 'pause' | 'resume' | 'stop'): void {
+  if (!existsSync(DATA_DIR)) {
+    mkdirSync(DATA_DIR, { recursive: true });
+  }
+  writeFileSync(CONTROL_FILE, JSON.stringify({ action, timestamp: new Date().toISOString() }));
+}
+
+async function isMasterHealthy(): Promise<boolean> {
+  if (!existsSync(HEALTH_FILE)) return false;
+  try {
+    const health = JSON.parse(readFileSync(HEALTH_FILE, 'utf-8'));
+    const pid = Number(health.pid);
+    if (!Number.isFinite(pid) || pid <= 0) return false;
+
+    // Verify process still exists
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return false;
+    }
+
+    const age = Date.now() - new Date(health.timestamp).getTime();
+    const heartbeatInterval = Number(health.heartbeatInterval) || (await loadConfig()).heartbeatInterval || 30000;
+    // Consider unhealthy if heartbeat is older than 2x configured interval (+5s grace)
+    return age < heartbeatInterval * 2 + 5000;
+  } catch {
+    return false;
+  }
 }
 
 main().catch(console.error);

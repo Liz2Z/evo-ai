@@ -36,15 +36,64 @@ export async function getDevelopBranch(): Promise<string> {
   return 'main';
 }
 
-export async function createWorktree(task: Task, baseBranch: string): Promise<{ path: string; branch: string } | null> {
-  const worktreeName = `task-${task.id}`;
-  const branchName = `task/${task.id}`;
-  const worktreePath = join(process.cwd(), '.worktrees', worktreeName);
+function sanitizeSlug(input: string, maxLen = 40): string {
+  return input
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, maxLen) || 'task';
+}
 
-  if (existsSync(worktreePath)) {
-    console.log(`Worktree already exists: ${worktreePath}`);
-    return { path: worktreePath, branch: branchName };
+async function findExistingTaskWorktree(taskId: string): Promise<string | null> {
+  const branchName = `task/${taskId}`;
+  const result = await runGit(['worktree', 'list', '--porcelain']);
+  if (result.exitCode !== 0) return null;
+
+  const lines = result.stdout.split('\n');
+  let currentPath = '';
+
+  for (const line of lines) {
+    if (line.startsWith('worktree ')) {
+      currentPath = line.replace('worktree ', '').trim();
+      continue;
+    }
+    if (line.startsWith('branch refs/heads/')) {
+      const branch = line.replace('branch refs/heads/', '').trim();
+      if (branch === branchName && currentPath) {
+        return currentPath;
+      }
+    }
   }
+
+  return null;
+}
+
+function shortStableHash(input: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36).slice(0, 6);
+}
+
+export async function createWorktree(
+  task: Task,
+  baseBranch: string,
+  semanticTitle?: string
+): Promise<{ path: string; branch: string } | null> {
+  const branchName = `task/${task.id}`;
+  const existing = await findExistingTaskWorktree(task.id);
+  if (existing) {
+    return { path: existing, branch: branchName };
+  }
+
+  const titleSlug = sanitizeSlug(semanticTitle || task.description || task.id);
+  const timestamp = Date.now().toString(36);
+  const hash = shortStableHash(task.id);
+  // Naming rule: semantic first, followed by timestamp and hash
+  const worktreeName = `${titleSlug}-${timestamp}-${hash}`;
+  const worktreePath = join(process.cwd(), '.worktrees', worktreeName);
 
   // Create worktree with new branch
   const result = await runGit([
@@ -54,13 +103,11 @@ export async function createWorktree(task: Task, baseBranch: string): Promise<{ 
   ]);
 
   if (result.exitCode !== 0) {
-    console.error(`Failed to create worktree: ${result.stderr}`);
     // Try without creating new branch if branch might exist
     const retryResult = await runGit([
       'worktree', 'add', worktreePath, branchName
     ]);
     if (retryResult.exitCode !== 0) {
-      console.error(`Retry failed: ${retryResult.stderr}`);
       return null;
     }
   }
@@ -125,7 +172,7 @@ export async function getRepoStatus(): Promise<{
 }> {
   const branch = await getCurrentBranch();
   const hasChanges = await hasUncommittedChanges();
-  
+
   const worktreeResult = await runGit(['worktree', 'list']);
   const worktrees = worktreeResult.stdout
     .split('\n')
@@ -133,4 +180,13 @@ export async function getRepoStatus(): Promise<{
     .map(line => line.split(/\s+/)[0]);
 
   return { branch, hasChanges, worktrees };
+}
+
+export async function listWorktrees(): Promise<string[]> {
+  const result = await runGit(['worktree', 'list', '--porcelain']);
+  if (result.exitCode !== 0) return [];
+  return result.stdout
+    .split('\n')
+    .filter(line => line.startsWith('worktree '))
+    .map(line => line.replace('worktree ', ''));
 }

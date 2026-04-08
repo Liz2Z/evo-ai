@@ -1,11 +1,10 @@
 import React from 'react';
 import { render } from 'ink';
-import type { EventEmitter } from 'events';
 import type { Master } from '../master/scheduler';
 import { KanbanBoard } from './components/KanbanBoard';
 
 interface TUIOptions {
-  emitter: EventEmitter | null;
+  emitter: Master | null;
   master: Master | null;
   maxConcurrency: number;
   onQuit: () => void;

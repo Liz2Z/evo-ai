@@ -3,11 +3,46 @@ import { readFileSync } from 'fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { SlaveType, Task, TaskResult, ReviewResult } from '../types';
 import { addHistoryEntry, updateSlave } from '../utils/storage';
-import { createWorktree, getDiff, getChangedFiles } from '../utils/git';
+import { createWorktree, getDiff, getChangedFiles, removeWorktree } from '../utils/git';
 import { SlaveLogger } from '../utils/logger';
 import type { LogMessageEvent } from '../types/events';
 
 const PROMPTS_DIR = join(import.meta.dir, 'prompts');
+
+// Rate limiter: ensures minimum delay between API calls
+class RateLimiter {
+  private queue: Array<{ resolve: () => void }> = [];
+  private running = 0;
+  private lastFinish = 0;
+
+  constructor(
+    private maxConcurrent: number,
+    private minIntervalMs: number,
+  ) {}
+
+  async acquire(): Promise<void> {
+    // Enforce minimum interval between consecutive calls
+    const wait = Math.max(0, this.minIntervalMs - (Date.now() - this.lastFinish));
+    if (wait > 0) {
+      await new Promise<void>(r => setTimeout(r, wait));
+    }
+
+    if (this.running >= this.maxConcurrent) {
+      await new Promise<void>(resolve => this.queue.push({ resolve }));
+    }
+
+    this.running++;
+  }
+
+  release(): void {
+    this.running--;
+    this.lastFinish = Date.now();
+    const next = this.queue.shift();
+    next?.resolve();
+  }
+}
+
+const apiLimiter = new RateLimiter(2, 2000); // Max 2 concurrent, 2s between calls
 
 function loadPrompt(type: SlaveType): string {
   const filename = `${type}.md`;
@@ -20,6 +55,26 @@ function generateTaskId(): string {
 
 function generateSlaveId(type: SlaveType): string {
   return `${type}-${generateTaskId()}`;
+}
+
+function fallbackTitleFromTask(task: Task): string {
+  return task.description
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .slice(0, 6)
+    .join('-') || `task-${task.id.slice(-7)}`;
+}
+
+function sanitizeModelTitle(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/[^a-z0-9-_\s]+/g, '')
+    .replace(/[_\s]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
 }
 
 // Load .env file and return env vars for SDK
@@ -64,6 +119,7 @@ export class SlaveLauncher {
   private task: Task;
   private worktreePath: string | null = null;
   private branch: string | null = null;
+  private shouldRemoveWorktreeOnCleanup = false;
   private logger?: SlaveLogger;
   private onLog?: (event: LogMessageEvent) => void;
 
@@ -85,6 +141,7 @@ export class SlaveLauncher {
     };
     if (this.logger) {
       if (level === 'error') this.logger.error(message);
+      else if (level === 'debug') this.logger.debug(message);
       else this.logger.info(message);
     }
     if (this.onLog) {
@@ -106,28 +163,12 @@ export class SlaveLauncher {
 
   async execute(): Promise<TaskResult | ReviewResult | null> {
     try {
+      this.log('debug', `Preparing ${this.type} slave context`);
       const basePrompt = loadPrompt(this.type);
       const contextPrompt = this.buildContextPrompt();
       const fullSystemPrompt = `${basePrompt}\n\n${contextPrompt}`;
 
       // For worker type, create worktree first
-      if (this.type === 'worker' && this.options.baseBranch) {
-        const worktreeResult = await createWorktree(this.task, this.options.baseBranch);
-        if (worktreeResult) {
-          this.worktreePath = worktreeResult.path;
-          this.branch = worktreeResult.branch;
-        }
-      }
-
-      // Execute using Claude Agent SDK
-      this.log('info', `Starting ${this.type} slave ${this.slaveId}...`);
-      console.log(`Starting ${this.type} slave ${this.slaveId}...`);
-
-      const workingDir = this.worktreePath || this.options.worktreePath || process.cwd();
-
-      // Build the task prompt
-      const taskPrompt = this.buildTaskPrompt();
-
       // Get env config from .env file
       const envConfig = getEnvConfig();
 
@@ -140,49 +181,92 @@ export class SlaveLauncher {
         ANTHROPIC_BASE_URL: envConfig.ANTHROPIC_BASE_URL || envConfig.BASE_URL,
       };
 
-      // Run query using Claude Agent SDK
-      let output = '';
-      const q = query({
-        prompt: taskPrompt,
-        options: {
-          systemPrompt: fullSystemPrompt,
-          cwd: resolve(workingDir),
-          env: sdkEnv,
-          permissionMode: 'bypassPermissions',
-          allowDangerouslySkipPermissions: true,
-          maxTurns: this.type === 'inspector' ? 10 : 20,
-        },
-      });
-
-      for await (const message of q) {
-        if (message.type === 'result') {
-          if (message.subtype === 'success') {
-            output = message.result;
-          } else {
-            const errMsg = (message as any).errors?.join('; ') || 'Unknown error';
-            this.log('error', `Slave ${this.slaveId} error: ${errMsg}`);
-            console.error(`Slave ${this.slaveId} error:`, (message as any).errors);
-            output = JSON.stringify({
-              status: 'failed',
-              summary: (message as any).errors?.join('; ') || 'Unknown error',
-              filesChanged: [],
-            });
-          }
+      if (this.type === 'worker' && this.options.baseBranch) {
+        this.log('info', `Creating worktree from ${this.options.baseBranch}`);
+        const semanticTitle = await this.generateWorktreeTitle(sdkEnv);
+        const worktreeResult = await createWorktree(this.task, this.options.baseBranch, semanticTitle);
+        if (worktreeResult) {
+          this.worktreePath = worktreeResult.path;
+          this.branch = worktreeResult.branch;
+          this.shouldRemoveWorktreeOnCleanup = true;
+          this.log('info', `Worktree ready: ${this.branch}`);
+        } else {
+          const message = `Failed to create worktree for task ${this.task.id}`;
+          this.log('error', message);
+          return {
+            taskId: this.task.id,
+            status: 'failed',
+            worktree: '',
+            branch: '',
+            diff: '',
+            summary: message,
+            filesChanged: [],
+            error: message,
+          } as TaskResult;
         }
       }
 
+      // Execute using Claude Agent SDK
+      this.log('info', `Starting ${this.type} slave ${this.slaveId}...`);
+
+      const workingDir = this.worktreePath || this.options.worktreePath || process.cwd();
+
+      // Build the task prompt
+      const taskPrompt = this.buildTaskPrompt();
+
+      // Rate limit the API call
+      await apiLimiter.acquire();
+      let output = '';
+      try {
+        this.log('info', `Calling model for ${this.type} task`);
+        const q = query({
+          prompt: taskPrompt,
+          options: {
+            systemPrompt: fullSystemPrompt,
+            cwd: resolve(workingDir),
+            env: sdkEnv,
+            permissionMode: 'bypassPermissions',
+            allowDangerouslySkipPermissions: true,
+            maxTurns: this.type === 'inspector' ? 10 : 20,
+          },
+        });
+
+        for await (const message of q) {
+          if (message.type === 'result') {
+            if (message.subtype === 'success') {
+              output = message.result;
+            } else {
+              const errMsg = (message as any).errors?.join('; ') || 'Unknown error';
+              this.log('error', `Slave ${this.slaveId} error: ${errMsg}`);
+              output = JSON.stringify({
+                status: 'failed',
+                summary: (message as any).errors?.join('; ') || 'Unknown error',
+                filesChanged: [],
+              });
+            }
+          }
+        }
+      } finally {
+        apiLimiter.release();
+      }
+
+      this.log('debug', `Model returned ${output.length} chars`);
       this.log('info', `${this.type} slave ${this.slaveId} completed`);
-      console.log(`${this.type} slave ${this.slaveId} completed`);
 
       // Process result based on type
       if (this.type === 'reviewer') {
+        this.log('debug', 'Parsing review result');
         return this.parseReviewResult(output);
       } else {
-        return await this.parseTaskResult(output);
+        this.log('debug', 'Parsing task result');
+        const result = await this.parseTaskResult(output);
+        if (this.type === 'worker' && result.status === 'completed') {
+          this.shouldRemoveWorktreeOnCleanup = false;
+        }
+        return result;
       }
     } catch (error) {
       this.log('error', `Slave ${this.slaveId} failed: ${error}`);
-      console.error(`Slave ${this.slaveId} failed:`, error);
       await addHistoryEntry({
         timestamp: new Date().toISOString(),
         type: 'error',
@@ -256,9 +340,11 @@ export class SlaveLauncher {
     let diff = '';
     let filesChanged: string[] = [];
     if (this.worktreePath && this.branch) {
+      this.log('debug', `Collecting diff for ${this.branch}`);
       const baseBranch = this.options.baseBranch || 'develop';
       diff = await getDiff(this.branch, baseBranch, this.worktreePath);
       filesChanged = await getChangedFiles(this.branch, baseBranch, this.worktreePath);
+      this.log('debug', `Collected diff for ${filesChanged.length} file(s)`);
     }
 
     return {
@@ -302,6 +388,12 @@ export class SlaveLauncher {
   }
 
   private async cleanup(): Promise<void> {
+    if (this.shouldRemoveWorktreeOnCleanup && this.worktreePath) {
+      this.log('info', `Cleaning up worktree: ${this.worktreePath}`);
+      await removeWorktree(this.worktreePath);
+      this.worktreePath = null;
+    }
+
     await updateSlave(this.slaveId, {
       status: 'idle',
       currentTask: undefined,
@@ -309,7 +401,55 @@ export class SlaveLauncher {
   }
 
   async cancel(): Promise<void> {
+    this.log('info', `${this.type} slave ${this.slaveId} cancelled`);
+    this.shouldRemoveWorktreeOnCleanup = true;
     await this.cleanup();
+  }
+
+  private async generateWorktreeTitle(env: Record<string, string | undefined>): Promise<string> {
+    if (!env.ANTHROPIC_API_KEY) {
+      return fallbackTitleFromTask(this.task);
+    }
+
+    const prompt = [
+      'Generate a short semantic title for a git worktree based on this task.',
+      'Return ONLY a kebab-case slug, 3-8 words, lowercase, letters/numbers/hyphen only.',
+      `Task description: ${this.task.description}`,
+      this.task.context ? `Task context: ${this.task.context}` : '',
+    ].filter(Boolean).join('\n');
+
+    await apiLimiter.acquire();
+    try {
+      const queryOptions: any = {
+        cwd: resolve(process.cwd()),
+        env,
+        permissionMode: 'bypassPermissions',
+        allowDangerouslySkipPermissions: true,
+        maxTurns: 1,
+      };
+      if (process.env.WORKTREE_TITLE_MODEL) {
+        queryOptions.model = process.env.WORKTREE_TITLE_MODEL;
+      }
+
+      const q = query({
+        prompt,
+        options: queryOptions,
+      });
+
+      let output = '';
+      for await (const message of q) {
+        if (message.type === 'result' && message.subtype === 'success') {
+          output = message.result;
+        }
+      }
+
+      const slug = sanitizeModelTitle(output.trim().split('\n')[0] || '');
+      return slug || fallbackTitleFromTask(this.task);
+    } catch {
+      return fallbackTitleFromTask(this.task);
+    } finally {
+      apiLimiter.release();
+    }
   }
 }
 

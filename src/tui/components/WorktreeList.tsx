@@ -1,11 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { Box, Text, useInput } from 'ink';
-import type { Task, TaskStatus } from '../../types';
+import type { Task } from '../../types';
+import { GROUP_ORDER, getGroupKey, getGroupedTaskIds } from './worktreeListModel';
 
 interface WorktreeListProps {
   tasks: Task[];
   selectedTaskId: string | null;
   onSelect: (taskId: string | null) => void;
+  maxHeight: number;
 }
 
 const STATUS_CONFIG: Record<string, { icon: string; color: string; label: string }> = {
@@ -19,16 +21,8 @@ const STATUS_CONFIG: Record<string, { icon: string; color: string; label: string
   rejected: { icon: '✗', color: 'red', label: 'REJECTED' },
 };
 
-const GROUP_ORDER: TaskStatus[] = ['running', 'assigned', 'reviewing', 'pending', 'approved', 'completed', 'failed', 'rejected'];
-
-function getGroupKey(status: TaskStatus): string {
-  if (status === 'assigned') return 'running';
-  return status;
-}
-
-export function WorktreeList({ tasks, selectedTaskId, onSelect }: WorktreeListProps) {
-  // Build flat list of task IDs for navigation
-  const flatIds = tasks.map(t => t.id);
+export function WorktreeList({ tasks, selectedTaskId, onSelect, maxHeight }: WorktreeListProps) {
+  const flatIds = getGroupedTaskIds(tasks);
   const currentIndex = selectedTaskId ? flatIds.indexOf(selectedTaskId) : -1;
 
   useInput((input, key) => {
@@ -41,7 +35,7 @@ export function WorktreeList({ tasks, selectedTaskId, onSelect }: WorktreeListPr
     }
   });
 
-  // Group tasks by status
+  // Group tasks
   const grouped = new Map<string, Task[]>();
   for (const task of tasks) {
     const key = getGroupKey(task.status);
@@ -50,49 +44,60 @@ export function WorktreeList({ tasks, selectedTaskId, onSelect }: WorktreeListPr
     grouped.set(key, group);
   }
 
-  // Render in group order
-  let itemIndex = 0;
+  // Build lines and fit within maxHeight
+  const lines: { content: React.ReactNode; isTask: boolean; taskId?: string }[] = [];
+
+  for (const status of GROUP_ORDER) {
+    const group = grouped.get(status);
+    if (!group || group.length === 0) continue;
+    const cfg = STATUS_CONFIG[status] || STATUS_CONFIG.pending;
+
+    if (lines.length > 0) lines.push({ content: <Text> </Text>, isTask: false });
+    lines.push({
+      content: <Text bold color={cfg.color}>{cfg.label} ({group.length})</Text>,
+      isTask: false,
+    });
+
+    for (const task of group) {
+      const cfg2 = STATUS_CONFIG[task.status] || STATUS_CONFIG.pending;
+      lines.push({
+        content: (
+          <Text>
+            {task.id === selectedTaskId ? '> ' : '  '}
+            <Text color={cfg2.color}>{cfg2.icon}</Text>
+            {' '}
+            <Text color={task.id === selectedTaskId ? 'white' : 'gray'}>
+              {task.id.slice(-7)}
+            </Text>
+            {' '}
+            <Text color={task.id === selectedTaskId ? 'white' : 'gray'}>
+              {task.description.slice(0, 30)}
+              {task.description.length > 30 ? '...' : ''}
+            </Text>
+          </Text>
+        ),
+        isTask: true,
+        taskId: task.id,
+      });
+    }
+  }
+
+  // Trim to fit maxHeight, keeping selected item visible
+  let visibleLines = lines;
+  if (lines.length > maxHeight) {
+    const selectedIdx = lines.findIndex(l => l.taskId === selectedTaskId);
+    const half = Math.floor(maxHeight / 2);
+    let start = Math.max(0, (selectedIdx >= 0 ? selectedIdx : 0) - half);
+    const end = Math.min(lines.length, start + maxHeight);
+    start = Math.max(0, end - maxHeight);
+    visibleLines = lines.slice(start, end);
+  }
 
   return (
-    <Box flexDirection="column" width="100%">
-      {GROUP_ORDER.map(status => {
-        const group = grouped.get(status);
-        if (!group || group.length === 0) return null;
-        const cfg = STATUS_CONFIG[status] || STATUS_CONFIG.pending;
-
-        return (
-          <Box key={status} flexDirection="column">
-            <Box marginTop={itemIndex > 0 ? 1 : 0}>
-              <Text bold color={cfg.color}>
-                {cfg.label} ({group.length})
-              </Text>
-            </Box>
-            {group.map(task => {
-              const isSelected = task.id === selectedTaskId;
-              const cfg2 = STATUS_CONFIG[task.status] || STATUS_CONFIG.pending;
-              itemIndex++;
-
-              return (
-                <Box key={task.id}>
-                  <Text>
-                    {isSelected ? '> ' : '  '}
-                    <Text color={cfg2.color}>{cfg2.icon}</Text>
-                    {' '}
-                    <Text color={isSelected ? 'white' : 'gray'}>
-                      {task.id.slice(-7)}
-                    </Text>
-                    {' '}
-                    <Text color={isSelected ? 'white' : 'gray'}>
-                      {task.description.slice(0, 30)}
-                      {task.description.length > 30 ? '...' : ''}
-                    </Text>
-                  </Text>
-                </Box>
-              );
-            })}
-          </Box>
-        );
-      })}
+    <Box flexDirection="column">
+      {visibleLines.map((line, i) => (
+        <Box key={i}>{line.content}</Box>
+      ))}
       {tasks.length === 0 && (
         <Text color="gray">No tasks yet. Waiting for inspection...</Text>
       )}

@@ -1,13 +1,69 @@
 import { existsSync } from 'fs';
-import { mkdir } from 'fs/promises';
+import { appendFile, mkdir } from 'fs/promises';
 import { join, dirname } from 'path';
-import type { Task, SlaveInfo, MasterState, HistoryEntry, Config, Question } from '../types';
+import { EventEmitter } from 'events';
+import type { Task, SlaveInfo, MasterState, HistoryEntry, Config, Question, PersistedEvent } from '../types';
 
 const DATA_DIR = process.env.DATA_DIR || join(process.cwd(), 'data');
+const EVENTS_DIR = join(DATA_DIR, 'events');
+const projectionEmitter = new EventEmitter();
+
+function generateId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function todayKey(): string {
+  return new Date().toISOString().split('T')[0];
+}
 
 async function ensureDir(path: string) {
   if (!existsSync(path)) {
     await mkdir(path, { recursive: true });
+  }
+}
+
+async function appendEvent(
+  type: string,
+  entityType: PersistedEvent['entityType'],
+  payload: Record<string, unknown>,
+  entityId?: string
+): Promise<void> {
+  await ensureDir(EVENTS_DIR);
+  const event: PersistedEvent = {
+    eventId: generateId('evt'),
+    timestamp: new Date().toISOString(),
+    type,
+    entityType,
+    entityId,
+    payload,
+  };
+  const filepath = join(EVENTS_DIR, `${todayKey()}.ndjson`);
+  await appendFile(filepath, JSON.stringify(event) + '\n');
+}
+
+function emitProjectionUpdated(scope: string, entityId?: string): void {
+  projectionEmitter.emit('projection:updated', {
+    scope,
+    entityId,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+export function getProjectionEmitter(): EventEmitter {
+  return projectionEmitter;
+}
+
+export async function loadEvents(date: string = todayKey()): Promise<PersistedEvent[]> {
+  const filepath = join(EVENTS_DIR, `${date}.ndjson`);
+  try {
+    const content = await Bun.file(filepath).text();
+    if (!content.trim()) return [];
+    return content
+      .split('\n')
+      .filter(line => line.trim())
+      .map(line => JSON.parse(line) as PersistedEvent);
+  } catch {
+    return [];
   }
 }
 
@@ -22,9 +78,13 @@ export async function readJSON<T>(filename: string, defaultValue: T): Promise<T>
 }
 
 export async function writeJSON<T>(filename: string, data: T): Promise<void> {
-  await ensureDir(DATA_DIR);
+  await ensureDir(dirname(join(DATA_DIR, filename)));
   const filepath = join(DATA_DIR, filename);
   await Bun.write(filepath, JSON.stringify(data, null, 2));
+}
+
+async function writeTasksInternal(tasks: Task[]): Promise<void> {
+  await writeJSON('tasks.json', tasks);
 }
 
 // Tasks storage
@@ -33,13 +93,17 @@ export async function loadTasks(): Promise<Task[]> {
 }
 
 export async function saveTasks(tasks: Task[]): Promise<void> {
-  return writeJSON('tasks.json', tasks);
+  await appendEvent('tasks.replaced', 'task', { count: tasks.length });
+  await writeTasksInternal(tasks);
+  emitProjectionUpdated('tasks');
 }
 
 export async function addTask(task: Task): Promise<void> {
   const tasks = await loadTasks();
   tasks.push(task);
-  await saveTasks(tasks);
+  await appendEvent('task.created', 'task', { task }, task.id);
+  await writeTasksInternal(tasks);
+  emitProjectionUpdated('tasks', task.id);
 }
 
 export async function updateTask(taskId: string, updates: Partial<Task>): Promise<Task | null> {
@@ -47,7 +111,9 @@ export async function updateTask(taskId: string, updates: Partial<Task>): Promis
   const index = tasks.findIndex(t => t.id === taskId);
   if (index === -1) return null;
   tasks[index] = { ...tasks[index], ...updates, updatedAt: new Date().toISOString() };
-  await saveTasks(tasks);
+  await appendEvent('task.updated', 'task', { updates }, taskId);
+  await writeTasksInternal(tasks);
+  emitProjectionUpdated('tasks', taskId);
   return tasks[index];
 }
 
@@ -62,7 +128,9 @@ export async function loadSlaves(): Promise<SlaveInfo[]> {
 }
 
 export async function saveSlaves(slaves: SlaveInfo[]): Promise<void> {
-  return writeJSON('slaves.json', slaves);
+  await appendEvent('slaves.replaced', 'slave', { count: slaves.length });
+  await writeJSON('slaves.json', slaves);
+  emitProjectionUpdated('slaves');
 }
 
 export async function updateSlave(slaveId: string, updates: Partial<SlaveInfo>): Promise<void> {
@@ -73,7 +141,9 @@ export async function updateSlave(slaveId: string, updates: Partial<SlaveInfo>):
   } else {
     slaves.push({ id: slaveId, ...updates } as SlaveInfo);
   }
-  await saveSlaves(slaves);
+  await appendEvent('slave.upserted', 'slave', { updates }, slaveId);
+  await writeJSON('slaves.json', slaves);
+  emitProjectionUpdated('slaves', slaveId);
 }
 
 // Master state
@@ -89,7 +159,9 @@ export async function loadMasterState(): Promise<MasterState> {
 }
 
 export async function saveMasterState(state: MasterState): Promise<void> {
-  return writeJSON('master.json', state);
+  await appendEvent('master.updated', 'master', { state }, 'master');
+  await writeJSON('master.json', state);
+  emitProjectionUpdated('master', 'master');
 }
 
 // History
@@ -104,8 +176,9 @@ export async function addHistoryEntry(entry: HistoryEntry): Promise<void> {
   const date = new Date().toISOString().split('T')[0];
   const history = await loadHistory(date);
   history.push(entry);
-  await ensureDir(join(DATA_DIR, 'history'));
+  await appendEvent('history.added', 'history', { entry }, entry.taskId);
   await writeJSON(`history/${date}.json`, history);
+  emitProjectionUpdated('history', entry.taskId);
 }
 
 // Config
@@ -122,7 +195,9 @@ export async function loadConfig(): Promise<Config> {
 }
 
 export async function saveConfig(config: Config): Promise<void> {
-  return writeJSON('../config.json', config);
+  await appendEvent('config.updated', 'config', { config }, 'config');
+  await writeJSON('../config.json', config);
+  emitProjectionUpdated('config', 'config');
 }
 
 // Failed tasks
@@ -133,7 +208,9 @@ export async function loadFailedTasks(): Promise<Task[]> {
 export async function addFailedTask(task: Task): Promise<void> {
   const failed = await loadFailedTasks();
   failed.push(task);
+  await appendEvent('failed_task.added', 'failed_task', { task }, task.id);
   await writeJSON('failed_tasks.json', failed);
+  emitProjectionUpdated('failed_tasks', task.id);
 }
 
 // Questions
@@ -145,6 +222,7 @@ export async function loadQuestions(): Promise<Question[]> {
 export async function addQuestion(question: Question): Promise<void> {
   const state = await loadMasterState();
   state.pendingQuestions.push(question);
+  await appendEvent('question.added', 'question', { question }, question.id);
   await saveMasterState(state);
 }
 
@@ -154,6 +232,7 @@ export async function answerQuestion(questionId: string, answer: string): Promis
   if (q) {
     q.answered = true;
     q.answer = answer;
+    await appendEvent('question.answered', 'question', { answer }, questionId);
     await saveMasterState(state);
   }
 }

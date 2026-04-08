@@ -50,7 +50,13 @@ export class SlaveLogger {
 
     // Persist to file (non-blocking)
     if (this.taskId) {
-      this.persistToFile(this.taskId, entry).catch(() => {});
+      this.persistToFile(this.taskId, entry).catch((err) => {
+        // Log persistence failure to stderr but don't throw
+        if (entry.level === 'error') {
+          // Avoid infinite recursion: only log persistence errors for non-error entries
+          process.stderr.write(`[logger] Failed to persist log: ${err}\n`);
+        }
+      });
     }
   }
 

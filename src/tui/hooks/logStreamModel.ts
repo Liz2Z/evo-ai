@@ -1,0 +1,100 @@
+import { readFile } from 'fs/promises';
+import { join } from 'path';
+import type { LogEntry } from '../../types';
+import { getGlobalLogBuffer } from '../../utils/logger';
+
+export const DEFAULT_LOG_LIMIT = 200;
+
+function logEntryKey(entry: LogEntry): string {
+  return [
+    entry.timestamp,
+    entry.slaveId,
+    entry.taskId || '',
+    entry.level,
+    entry.message,
+  ].join('|');
+}
+
+export function normalizeSlaveIds(slaveIds?: string[]): string[] | undefined {
+  if (!slaveIds) return undefined;
+  return [...new Set(slaveIds)].sort();
+}
+
+export function matchesSlaveFilter(entry: LogEntry, slaveIds?: string[]): boolean {
+  if (!slaveIds) return true;
+  if (slaveIds.length === 0) return false;
+  return slaveIds.includes(entry.slaveId);
+}
+
+export function parseLogFileContent(content: string): LogEntry[] {
+  return content
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .flatMap(line => {
+      try {
+        return [JSON.parse(line) as LogEntry];
+      } catch {
+        return [];
+      }
+    });
+}
+
+export function mergeLogEntries(
+  sources: LogEntry[][],
+  slaveIds?: string[],
+  limit = DEFAULT_LOG_LIMIT,
+): LogEntry[] {
+  const merged = new Map<string, LogEntry>();
+
+  for (const source of sources) {
+    for (const entry of source) {
+      if (!matchesSlaveFilter(entry, slaveIds)) continue;
+      merged.set(logEntryKey(entry), entry);
+    }
+  }
+
+  return [...merged.values()]
+    .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+    .slice(-limit);
+}
+
+export function appendLogEntry(
+  existing: LogEntry[],
+  entry: LogEntry,
+  slaveIds?: string[],
+  limit = DEFAULT_LOG_LIMIT,
+): LogEntry[] {
+  return mergeLogEntries([existing, [entry]], slaveIds, limit);
+}
+
+export async function readPersistedTaskLogs(
+  taskId: string,
+  logsDir = join(process.cwd(), 'data', 'logs'),
+): Promise<LogEntry[]> {
+  try {
+    const filepath = join(logsDir, `${taskId}.log`);
+    const content = await readFile(filepath, 'utf-8');
+    return parseLogFileContent(content);
+  } catch {
+    return [];
+  }
+}
+
+export async function loadTaskLogs(
+  taskId: string,
+  slaveIds?: string[],
+  options?: {
+    limit?: number;
+    logsDir?: string;
+  },
+): Promise<LogEntry[]> {
+  const inMemory = getGlobalLogBuffer().get(taskId) || [];
+  const fromDisk = await readPersistedTaskLogs(taskId, options?.logsDir);
+
+  return mergeLogEntries(
+    [inMemory, fromDisk],
+    slaveIds,
+    options?.limit ?? DEFAULT_LOG_LIMIT,
+  );
+}

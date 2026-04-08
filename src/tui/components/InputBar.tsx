@@ -1,17 +1,31 @@
-import React, { useState, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { Box, Text, useInput } from 'ink';
 
 interface InputBarProps {
   active: boolean;
   value: string;
-  placeholder: string;
   onActivate: () => void;
   onCancel: () => void;
   onSubmit: (text: string) => void;
   onChange: (text: string) => void;
 }
 
-export function InputBar({ active, value, placeholder, onActivate, onCancel, onSubmit, onChange }: InputBarProps) {
+const COMMANDS = [
+  { cmd: '/help', desc: 'Show available commands' },
+  { cmd: '/pause', desc: 'Pause master heartbeat' },
+  { cmd: '/resume', desc: 'Resume master heartbeat' },
+  { cmd: '/cancel', desc: 'Cancel a task by ID' },
+  { cmd: '/answer', desc: 'Answer a pending question' },
+  { cmd: '/mission', desc: 'Update master mission' },
+];
+
+function getMatchingCommands(input: string): typeof COMMANDS {
+  if (!input.startsWith('/')) return [];
+  const partial = input.toLowerCase();
+  return COMMANDS.filter(c => c.cmd.startsWith(partial));
+}
+
+export function InputBar({ active, value, onActivate, onCancel, onSubmit, onChange }: InputBarProps) {
   useInput((input, key) => {
     if (!active) {
       if (input === ':') {
@@ -52,16 +66,37 @@ export function InputBar({ active, value, placeholder, onActivate, onCancel, onS
     );
   }
 
+  const matches = getMatchingCommands(value);
+
   return (
-    <Box borderStyle="single" borderColor="cyan" paddingX={1}>
-      <Text color="cyan" bold>{'> '}</Text>
-      <Text>{value}</Text>
-      <Text backgroundColor="cyan"> </Text>
+    <Box flexDirection="column">
+      {/* Input line */}
+      <Box borderStyle="single" borderColor="cyan" paddingX={1}>
+        <Text color="cyan" bold>{'> '}</Text>
+        <Text>{value}</Text>
+        <Text backgroundColor="cyan"> </Text>
+        {matches.length === 1 && (
+          <Text color="gray">
+            {/* Autocomplete hint: show remaining text */}
+            {matches[0].cmd.slice(value.length)} — {matches[0].desc}
+          </Text>
+        )}
+      </Box>
+      {/* Command suggestions */}
+      {matches.length > 1 && (
+        <Box paddingLeft={3} flexDirection="column">
+          {matches.map(m => (
+            <Box key={m.cmd}>
+              <Text color="cyan">{m.cmd}</Text>
+              <Text color="gray"> — {m.desc}</Text>
+            </Box>
+          ))}
+        </Box>
+      )}
     </Box>
   );
 }
 
-// Hook to manage input state
 export function useInputBar() {
   const [inputActive, setInputActive] = useState(false);
   const [inputValue, setInputValue] = useState('');

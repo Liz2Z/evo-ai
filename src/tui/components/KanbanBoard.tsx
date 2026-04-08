@@ -1,6 +1,5 @@
-import React, { useState, useCallback } from 'react';
-import { Box, Text, useInput, useApp } from 'ink';
-import type { EventEmitter } from 'events';
+import { useState, useCallback } from 'react';
+import { Box, Text, useInput, useApp, useStdout } from 'ink';
 import type { Master } from '../../master/scheduler';
 import { useMasterState } from '../hooks/useMasterState';
 import { useLogStream } from '../hooks/useLogStream';
@@ -8,9 +7,10 @@ import { StatusBar } from './StatusBar';
 import { WorktreeList } from './WorktreeList';
 import { DetailPanel } from './DetailPanel';
 import { InputBar, useInputBar } from './InputBar';
+import { getActiveTaskSlaves } from './detailPanelModel';
 
 interface KanbanBoardProps {
-  emitter: EventEmitter | null;
+  emitter: Master | null;
   master: Master | null;
   maxConcurrency: number;
   onQuit: () => void;
@@ -18,6 +18,7 @@ interface KanbanBoardProps {
 
 export function KanbanBoard({ emitter, master, maxConcurrency, onQuit }: KanbanBoardProps) {
   const { exit } = useApp();
+  const { stdout } = useStdout();
   const [showLogs, setShowLogs] = useState(false);
   const { inputActive, inputValue, setInputValue, activate, cancel } = useInputBar();
   const [lastMessage, setLastMessage] = useState('');
@@ -29,12 +30,15 @@ export function KanbanBoard({ emitter, master, maxConcurrency, onQuit }: KanbanB
     selectedTaskId,
     lastHeartbeat,
     phase,
-    activeSlaves,
+    activeSlaves: activeSlaveCount,
     selectTask,
   } = useMasterState(emitter);
 
-  const logEntries = useLogStream(emitter, selectedTaskId);
   const selectedTask = tasks.find(t => t.id === selectedTaskId) || null;
+  const activeTaskSlaves = getActiveTaskSlaves(selectedTaskId, slaves);
+  const activeSlaveIds = activeTaskSlaves.map(slave => slave.id);
+  const logEntries = useLogStream(emitter, selectedTaskId);
+  const liveLogEntries = useLogStream(emitter, selectedTaskId, activeSlaveIds);
 
   const handleCommand = useCallback(async (text: string) => {
     cancel();
@@ -43,12 +47,10 @@ export function KanbanBoard({ emitter, master, maxConcurrency, onQuit }: KanbanB
 
     try {
       if (text.startsWith('/answer ')) {
-        // /answer <questionId> <answer text>
         const parts = text.slice(8).split(' ');
         const qid = parts[0];
         const answer = parts.slice(1).join(' ');
         if (master && qid && answer) {
-          // Use Master's answerQuestion or storage directly
           const { answerQuestion } = await import('../../utils/storage');
           await answerQuestion(qid, answer);
           setLastMessage(`Answered question ${qid}`);
@@ -72,17 +74,14 @@ export function KanbanBoard({ emitter, master, maxConcurrency, onQuit }: KanbanB
           setLastMessage(`Cancelled task ${taskId}`);
         }
       } else if (text.startsWith('/mission ')) {
-        // Update mission
         const mission = text.slice(9).trim();
         if (master) {
-          const state = master.getState();
-          state.mission = mission;
+          await master.setMission(mission);
           setLastMessage(`Mission updated: ${mission}`);
         }
       } else if (text === '/help') {
-        setLastMessage('Commands: /answer <id> <text> /pause /resume /cancel <id> /mission <text> /help | Plain text = new task');
+        setLastMessage('Commands: /answer /pause /resume /cancel /mission /help | Plain text = new task');
       } else {
-        // Plain text = add new task
         if (master) {
           const task = await master.addTaskManually(text);
           setLastMessage(`Task created: ${task.id.slice(-7)} - ${task.description.slice(0, 50)}`);
@@ -95,7 +94,7 @@ export function KanbanBoard({ emitter, master, maxConcurrency, onQuit }: KanbanB
 
   // Global key handling (only when input is NOT active)
   useInput((input, key) => {
-    if (inputActive) return; // InputBar handles its own input
+    if (inputActive) return;
 
     if (input === 'q') {
       onQuit();
@@ -109,21 +108,27 @@ export function KanbanBoard({ emitter, master, maxConcurrency, onQuit }: KanbanB
     }
   });
 
+  // Calculate available height for main content
+  // Layout: StatusBar(3) + MainContent(N) + LastMsg(1) + InputBar(3) = total
+  const termRows = stdout?.rows || 24;
+  const fixedHeight = 3 + (lastMessage ? 1 : 0) + 3; // status + message + input
+  const mainHeight = Math.max(8, termRows - fixedHeight);
+
   const pendingQuestions = masterState?.pendingQuestions?.length || 0;
 
   return (
-    <Box flexDirection="column" height="100%">
+    <Box flexDirection="column">
       {/* Status bar */}
       <StatusBar
         phase={phase}
         lastHeartbeat={lastHeartbeat}
-        activeSlaves={activeSlaves}
+        activeSlaves={activeSlaveCount}
         maxConcurrency={maxConcurrency}
         pendingQuestions={pendingQuestions}
       />
 
       {/* Main content */}
-      <Box flexDirection="row" flexGrow={1}>
+      <Box flexDirection="row" height={mainHeight}>
         {/* Left panel - Worktree list */}
         <Box
           flexDirection="column"
@@ -137,6 +142,7 @@ export function KanbanBoard({ emitter, master, maxConcurrency, onQuit }: KanbanB
             tasks={tasks}
             selectedTaskId={selectedTaskId}
             onSelect={selectTask}
+            maxHeight={mainHeight - 3}
           />
         </Box>
 
@@ -150,9 +156,11 @@ export function KanbanBoard({ emitter, master, maxConcurrency, onQuit }: KanbanB
         >
           <DetailPanel
             task={selectedTask}
-            slaves={slaves}
+            activeSlaves={activeTaskSlaves}
             logs={logEntries}
+            liveLogs={liveLogEntries}
             showLogs={showLogs}
+            maxHeight={mainHeight - 2}
           />
         </Box>
       </Box>
@@ -168,7 +176,6 @@ export function KanbanBoard({ emitter, master, maxConcurrency, onQuit }: KanbanB
       <InputBar
         active={inputActive}
         value={inputValue}
-        placeholder="Enter command or task description..."
         onActivate={activate}
         onCancel={cancel}
         onSubmit={handleCommand}

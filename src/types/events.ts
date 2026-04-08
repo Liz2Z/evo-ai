@@ -6,7 +6,8 @@ export type EvoEventType =
   | 'slave:status_change'
   | 'log:message'
   | 'worktree:change'
-  | 'master:state';
+  | 'master:state'
+  | 'projection:updated';
 
 export interface HeartbeatTickEvent {
   timestamp: string;
@@ -50,10 +51,17 @@ export interface MasterStateEvent {
   lastHeartbeat: string;
 }
 
+export interface ProjectionUpdatedEvent {
+  scope: string;
+  entityId?: string;
+  timestamp: string;
+}
+
 export type EvoEvent =
   | HeartbeatTickEvent
   | TaskStatusChangeEvent
   | SlaveStatusChangeEvent
   | LogMessageEvent
   | WorktreeChangeEvent
-  | MasterStateEvent;
+  | MasterStateEvent
+  | ProjectionUpdatedEvent;

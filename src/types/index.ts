@@ -112,3 +112,13 @@ export interface Config {
   developBranch: string;
   slaveCommand: string;
 }
+
+// Persisted event log entry (append-only)
+export interface PersistedEvent {
+  eventId: string;
+  timestamp: string;
+  type: string;
+  entityType: 'task' | 'slave' | 'master' | 'history' | 'question' | 'config' | 'failed_task' | 'system';
+  entityId?: string;
+  payload: Record<string, unknown>;
+}
