@@ -1,3 +1,4 @@
+// Auto-generated
 import { describe, test, expect, afterAll } from 'bun:test';
 import { existsSync, writeFileSync } from 'fs';
 import { join } from 'path';

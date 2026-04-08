@@ -1,3 +1,4 @@
+// Auto-generated
 import type { Task, TaskStatus } from '../../types';
 
 export const GROUP_ORDER: TaskStatus[] = [

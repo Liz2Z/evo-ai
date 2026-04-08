@@ -1,3 +1,4 @@
+// Auto-generated
 import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync } from 'fs';
 import { mkdir, rm, writeFile } from 'fs/promises';

@@ -1,3 +1,4 @@
+// Auto-generated
 import { readFile } from 'fs/promises';
 import { join } from 'path';
 import type { LogEntry } from '../../types';

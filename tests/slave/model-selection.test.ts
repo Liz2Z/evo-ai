@@ -1,3 +1,4 @@
+// Auto-generated
 import { describe, expect, test } from 'bun:test';
 import { getConfiguredModel, getModelTierForPurpose } from '../../src/slave/launcher';
 

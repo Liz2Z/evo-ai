@@ -1,3 +1,4 @@
+// Auto-generated
 import { EventEmitter } from 'events';
 import { existsSync, unlinkSync, writeFileSync, readFileSync } from 'fs';
 import type { Task, Config, MasterState, ReviewResult, TaskResult } from '../types';

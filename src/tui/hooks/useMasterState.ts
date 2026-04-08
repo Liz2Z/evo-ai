@@ -1,3 +1,4 @@
+// Auto-generated
 import { useState, useEffect, useCallback } from 'react';
 import type { EventEmitter } from 'events';
 import type { Task, SlaveInfo, MasterState, LogEntry } from '../../types';

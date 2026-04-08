@@ -1,3 +1,4 @@
+// Auto-generated
 import { join, resolve } from 'path';
 import { readFileSync } from 'fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';

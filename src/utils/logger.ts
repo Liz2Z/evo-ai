@@ -1,3 +1,4 @@
+// Auto-generated
 import { EventEmitter } from 'events';
 import { appendFile, mkdir } from 'fs/promises';
 import { join } from 'path';

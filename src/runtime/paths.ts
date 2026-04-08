@@ -1,3 +1,4 @@
+// Auto-generated
 import { xdgConfig } from 'xdg-basedir';
 import { homedir } from 'os';
 import { join } from 'path';

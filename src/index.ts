@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// Auto-generated
 import { parseArgs } from 'util';
 import { existsSync, writeFileSync, readFileSync, mkdirSync } from 'fs';
 import { Master } from './master/scheduler';

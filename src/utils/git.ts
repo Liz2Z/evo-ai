@@ -1,3 +1,4 @@
+// Auto-generated
 import { existsSync } from 'fs';
 import { join } from 'path';
 import type { Task } from '../types';
