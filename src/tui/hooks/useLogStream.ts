@@ -1,3 +1,4 @@
+// Auto-generated
 import { useState, useEffect } from 'react';
 import type { EventEmitter } from 'events';
 import type { LogEntry } from '../../types';

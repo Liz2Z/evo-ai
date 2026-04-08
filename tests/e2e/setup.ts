@@ -1,3 +1,4 @@
+// Auto-generated
 import { mkdir, rm, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';

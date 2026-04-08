@@ -1,3 +1,4 @@
+// Auto-generated
 import type { Config } from '../types';
 import { getGlobalConfigPath, getLocalConfigPath } from '../runtime/paths';
 

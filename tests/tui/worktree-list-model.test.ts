@@ -1,3 +1,4 @@
+// Auto-generated
 import { describe, expect, test } from 'bun:test';
 import type { Task } from '../../src/types';
 import { getGroupedTaskIds } from '../../src/tui/components/worktreeListModel';

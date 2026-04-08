@@ -1,3 +1,4 @@
+// Auto-generated
 import type { Task, TaskStatus, SlaveType, SlaveStatus } from './index';
 
 export type EvoEventType =

@@ -1,3 +1,4 @@
+// Auto-generated
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { SlaveLauncher, runWorker, runReviewer } from '../../src/slave/launcher';
 import { loadTasks, updateTask, addTask } from '../../src/utils/storage';

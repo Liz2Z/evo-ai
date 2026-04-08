@@ -1,3 +1,4 @@
+// Auto-generated
 import type { Task, TaskResult, ReviewResult } from '../../src/types';
 
 /**

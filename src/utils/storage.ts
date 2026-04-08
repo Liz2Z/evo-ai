@@ -1,3 +1,4 @@
+// Auto-generated
 import { existsSync } from 'fs';
 import { appendFile, mkdir } from 'fs/promises';
 import { join, dirname } from 'path';

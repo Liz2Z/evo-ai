@@ -1,3 +1,4 @@
+// Auto-generated
 import { describe, expect, test } from 'bun:test';
 import type { SlaveInfo, Task } from '../../src/types';
 import { getActiveTaskSlaves, isActiveTask } from '../../src/tui/components/detailPanelModel';

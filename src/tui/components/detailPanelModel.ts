@@ -1,3 +1,4 @@
+// Auto-generated
 import type { SlaveInfo, Task } from '../../types';
 
 const ACTIVE_TASK_STATUSES: Task['status'][] = ['assigned', 'running', 'reviewing'];

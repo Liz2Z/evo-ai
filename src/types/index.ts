@@ -1,4 +1,4 @@
-// Task types
+// Auto-generated
 export type TaskStatus = 'pending' | 'assigned' | 'running' | 'completed' | 'failed' | 'reviewing' | 'approved' | 'rejected';
 export type TaskType = 'fix' | 'feature' | 'refactor' | 'test' | 'docs' | 'other';
 
