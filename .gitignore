@@ -3,6 +3,8 @@ dist/
 .worktrees/
 data/
 .evo-ai/.data/
+.evo-ai/credentials.json
+.evo-ai/credenntials.json
 *.log
 .DS_Store
 .env

@@ -76,6 +76,61 @@ describe('配置解析', () => {
     });
   });
 
+  test('credentials.json 会按同样结构深合并，并覆盖同级 config.json', async () => {
+    const repoDir = await makeTempDir('evo-ai-credentials-local');
+    const xdgDir = await makeTempDir('evo-ai-credentials-xdg');
+    await mkdir(join(repoDir, '.evo-ai'), { recursive: true });
+    await mkdir(join(xdgDir, '.evo-ai'), { recursive: true });
+
+    await writeFile(join(xdgDir, '.evo-ai', 'config.json'), JSON.stringify({
+      provider: {
+        baseUrl: 'https://global-config.example.com',
+        apiKey: 'global-config-key',
+      },
+      models: {
+        lite: 'global-lite',
+      },
+    }, null, 2));
+
+    await writeFile(join(xdgDir, '.evo-ai', 'credentials.json'), JSON.stringify({
+      provider: {
+        apiKey: 'global-credentials-key',
+      },
+    }, null, 2));
+
+    await writeFile(join(repoDir, '.evo-ai', 'config.json'), JSON.stringify({
+      provider: {
+        baseUrl: 'https://local-config.example.com',
+      },
+      models: {
+        pro: 'local-pro',
+      },
+    }, null, 2));
+
+    await writeFile(join(repoDir, '.evo-ai', 'credentials.json'), JSON.stringify({
+      provider: {
+        apiKey: 'local-credentials-key',
+      },
+    }, null, 2));
+
+    const config = await loadResolvedConfigFromPaths({
+      globalConfigPath: join(xdgDir, '.evo-ai', 'config.json'),
+      globalCredentialsPath: join(xdgDir, '.evo-ai', 'credentials.json'),
+      localConfigPath: join(repoDir, '.evo-ai', 'config.json'),
+      localCredentialsPath: join(repoDir, '.evo-ai', 'credentials.json'),
+    });
+
+    expect(config.models).toEqual({
+      lite: 'global-lite',
+      pro: 'local-pro',
+      max: 'opus',
+    });
+    expect(config.provider).toEqual({
+      apiKey: 'local-credentials-key',
+      baseUrl: 'https://local-config.example.com',
+    });
+  });
+
   test('mission 解析优先 CLI，其次已保存状态', () => {
     expect(resolveStartupMission('saved mission', undefined)).toBe('saved mission');
     expect(resolveStartupMission('saved mission', 'cli mission')).toBe('cli mission');

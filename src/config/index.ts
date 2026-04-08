@@ -1,6 +1,11 @@
 // Auto-generated
 import type { Config } from '../types';
-import { getGlobalConfigPath, getLocalConfigPath } from '../runtime/paths';
+import {
+  getGlobalConfigPath,
+  getGlobalCredentialsPath,
+  getLocalConfigPath,
+  getLocalCredentialsPath,
+} from '../runtime/paths';
 
 export const DEFAULT_CONFIG: Config = {
   heartbeatInterval: 30000,
@@ -60,11 +65,25 @@ async function readConfigFile(path: string): Promise<Partial<Config> | undefined
 
 export async function loadResolvedConfigFromPaths(paths?: {
   globalConfigPath?: string;
+  globalCredentialsPath?: string;
   localConfigPath?: string;
+  localCredentialsPath?: string;
 }): Promise<Config> {
   const globalConfig = await readConfigFile(paths?.globalConfigPath || getGlobalConfigPath());
+  const globalCredentials = await readConfigFile(paths?.globalCredentialsPath || getGlobalCredentialsPath());
   const localConfig = await readConfigFile(paths?.localConfigPath || getLocalConfigPath());
-  return deepMerge(deepMerge(DEFAULT_CONFIG, globalConfig), localConfig);
+  const localCredentials = await readConfigFile(paths?.localCredentialsPath || getLocalCredentialsPath());
+
+  return deepMerge(
+    deepMerge(
+      deepMerge(
+        deepMerge(DEFAULT_CONFIG, globalConfig),
+        globalCredentials,
+      ),
+      localConfig,
+    ),
+    localCredentials,
+  );
 }
 
 export async function loadResolvedConfig(): Promise<Config> {

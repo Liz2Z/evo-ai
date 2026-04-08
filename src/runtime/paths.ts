@@ -30,10 +30,18 @@ export function getLocalConfigPath(root: string = process.cwd()): string {
   return join(getAppDir(root), 'config.json');
 }
 
+export function getLocalCredentialsPath(root: string = process.cwd()): string {
+  return join(getAppDir(root), 'credentials.json');
+}
+
 export function getXdgConfigDir(): string {
   return xdgConfig || join(homedir(), '.config');
 }
 
 export function getGlobalConfigPath(): string {
   return join(getXdgConfigDir(), APP_DIRNAME, 'config.json');
+}
+
+export function getGlobalCredentialsPath(): string {
+  return join(getXdgConfigDir(), APP_DIRNAME, 'credentials.json');
 }

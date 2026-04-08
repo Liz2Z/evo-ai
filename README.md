@@ -146,7 +146,7 @@ bun run src/index.ts --answer <question-id> "your answer"
 
 ## ⚙️ Configuration
 
-Edit `.evo-ai/config.json` to customize the system:
+Edit `.evo-ai/config.json` to customize the system. Secrets such as provider tokens can be stored separately in `.evo-ai/credentials.json` using the same JSON structure:
 
 ```json
 {
@@ -167,6 +167,14 @@ Edit `.evo-ai/config.json` to customize the system:
 }
 ```
 
+```json
+{
+  "provider": {
+    "apiKey": "your-token"
+  }
+}
+```
+
 ### Configuration Options
 
 - **heartbeatInterval**: How often (in ms) the Master checks for new actions
@@ -183,7 +191,9 @@ Edit `.evo-ai/config.json` to customize the system:
 Configuration is resolved with deep merge priority:
 
 - global: `XDG config dir/.evo-ai/config.json`
+- global credentials: `XDG config dir/.evo-ai/credentials.json`
 - local: `<repo>/.evo-ai/config.json`
+- local credentials: `<repo>/.evo-ai/credentials.json`
 
 Runtime state is stored under `<repo>/.evo-ai/.data/`.
 `mission` is not part of config. On first start you must pass `--mission`; after that it is restored from `master.json`.
@@ -214,6 +224,7 @@ evo-ai/
 │       └── evo-ai.md         # Project specification
 ├── .evo-ai/
 │   ├── config.json          # Local static config
+│   ├── credentials.json     # Local secrets, same schema as config.json
 │   └── .data/               # Runtime state
 ├── tsconfig.json            # TypeScript config
 └── package.json             # Project metadata
