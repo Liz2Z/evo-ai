@@ -5,12 +5,11 @@
   "worktreesDir": ".worktrees",
   "developBranch": "main",
   "models": {
-    "lite": "haiku",
-    "pro": "sonnet",
-    "max": "opus"
+    "lite": "glm-4.5-air",
+    "pro": "glm-4.7",
+    "max": "glm-5"
   },
   "provider": {
-    "apiKey": "",
-    "baseUrl": ""
+    "baseUrl": "https://open.bigmodel.cn/api/anthropic"
   }
 }
