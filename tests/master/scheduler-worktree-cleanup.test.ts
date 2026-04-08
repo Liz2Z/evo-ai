@@ -3,11 +3,10 @@ import { existsSync } from 'fs';
 import { mkdir, rm, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { createWorktree, deleteBranch, getDevelopBranch, removeWorktree } from '../../src/utils/git';
+import { createWorktree, deleteBranch, removeWorktree } from '../../src/utils/git';
 import type { Config, ReviewResult, Task } from '../../src/types';
 import { createTestTask } from '../e2e/helpers';
 
-const originalDataDir = process.env.DATA_DIR;
 const originalCwd = process.cwd();
 let dataDir: string;
 let repoDir: string;
@@ -18,13 +17,17 @@ let updateSlaveFn: typeof import('../../src/utils/storage').updateSlave;
 let loadSlavesFn: typeof import('../../src/utils/storage').loadSlaves;
 
 const baseConfig: Config = {
-  mission: 'test mission',
   heartbeatInterval: 30_000,
   maxConcurrency: 1,
   maxRetryAttempts: 3,
   worktreesDir: '.worktrees',
   developBranch: 'main',
-  slaveCommand: 'pi',
+  models: {
+    lite: 'haiku',
+    pro: 'sonnet',
+    max: 'opus',
+  },
+  provider: {},
 };
 
 beforeAll(async () => {
@@ -36,12 +39,12 @@ beforeAll(async () => {
   await writeFile(join(repoDir, 'README.md'), '# scheduler test repo\n');
 
   runCmd('git', ['init'], repoDir);
+  runCmd('git', ['checkout', '-b', 'main'], repoDir);
   runCmd('git', ['config', 'user.email', 'test@evo-ai.dev'], repoDir);
   runCmd('git', ['config', 'user.name', 'Evo AI Test'], repoDir);
   runCmd('git', ['add', '-A'], repoDir);
   runCmd('git', ['commit', '-m', 'Initial commit'], repoDir);
 
-  process.env.DATA_DIR = dataDir;
   process.chdir(repoDir);
 
   ({ Master: MasterClass } = await import('../../src/master/scheduler'));
@@ -56,17 +59,11 @@ beforeAll(async () => {
 afterAll(async () => {
   process.chdir(originalCwd);
 
-  if (originalDataDir === undefined) {
-    delete process.env.DATA_DIR;
-  } else {
-    process.env.DATA_DIR = originalDataDir;
-  }
-
   await rm(repoDir, { recursive: true, force: true });
 });
 
 async function createReviewingTask(): Promise<Task> {
-  const baseBranch = await getDevelopBranch();
+  const baseBranch = baseConfig.developBranch;
   const task = createTestTask({ status: 'reviewing' });
   const worktree = await createWorktree(task, baseBranch);
   if (!worktree) {
@@ -99,7 +96,7 @@ function runCmd(cmd: string, args: string[], cwd: string): void {
 describe('Master worktree cleanup', () => {
   test('review approve 后自动清理 worktree', async () => {
     const task = await createReviewingTask();
-    const master = new MasterClass(baseConfig) as any;
+    const master = new MasterClass(baseConfig, 'test mission') as any;
     const review: ReviewResult = {
       taskId: task.id,
       verdict: 'approve',
@@ -129,7 +126,7 @@ describe('Master worktree cleanup', () => {
 
   test('无 diff 自动 approve 时也清理 worktree', async () => {
     const task = await createReviewingTask();
-    const master = new MasterClass(baseConfig) as any;
+    const master = new MasterClass(baseConfig, 'test mission') as any;
 
     try {
       expect(existsSync(task.worktree!)).toBe(true);
@@ -150,7 +147,7 @@ describe('Master worktree cleanup', () => {
   });
 
   test('启动恢复后保留 running 任务的 worktree，并转为 pending 继续执行', async () => {
-    const baseBranch = await getDevelopBranch();
+    const baseBranch = baseConfig.developBranch;
     const task = createTestTask({ status: 'running' });
     const worktree = await createWorktree(task, baseBranch);
     if (!worktree) {
@@ -172,7 +169,7 @@ describe('Master worktree cleanup', () => {
       startedAt: new Date().toISOString(),
     });
 
-    const master = new MasterClass(baseConfig) as any;
+    const master = new MasterClass(baseConfig, 'test mission') as any;
 
     try {
       expect(existsSync(worktree.path)).toBe(true);

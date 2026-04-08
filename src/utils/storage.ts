@@ -2,10 +2,9 @@ import { existsSync } from 'fs';
 import { appendFile, mkdir } from 'fs/promises';
 import { join, dirname } from 'path';
 import { EventEmitter } from 'events';
-import type { Task, SlaveInfo, MasterState, HistoryEntry, Config, Question, PersistedEvent } from '../types';
+import type { Task, SlaveInfo, MasterState, HistoryEntry, Question, PersistedEvent } from '../types';
+import { getRuntimeDataDir } from '../runtime/paths';
 
-const DATA_DIR = process.env.DATA_DIR || join(process.cwd(), 'data');
-const EVENTS_DIR = join(DATA_DIR, 'events');
 const projectionEmitter = new EventEmitter();
 
 function generateId(prefix: string): string {
@@ -28,7 +27,8 @@ async function appendEvent(
   payload: Record<string, unknown>,
   entityId?: string
 ): Promise<void> {
-  await ensureDir(EVENTS_DIR);
+  const eventsDir = join(getRuntimeDataDir(), 'events');
+  await ensureDir(eventsDir);
   const event: PersistedEvent = {
     eventId: generateId('evt'),
     timestamp: new Date().toISOString(),
@@ -37,7 +37,7 @@ async function appendEvent(
     entityId,
     payload,
   };
-  const filepath = join(EVENTS_DIR, `${todayKey()}.ndjson`);
+  const filepath = join(eventsDir, `${todayKey()}.ndjson`);
   await appendFile(filepath, JSON.stringify(event) + '\n');
 }
 
@@ -54,7 +54,7 @@ export function getProjectionEmitter(): EventEmitter {
 }
 
 export async function loadEvents(date: string = todayKey()): Promise<PersistedEvent[]> {
-  const filepath = join(EVENTS_DIR, `${date}.ndjson`);
+  const filepath = join(getRuntimeDataDir(), 'events', `${date}.ndjson`);
   try {
     const content = await Bun.file(filepath).text();
     if (!content.trim()) return [];
@@ -68,7 +68,7 @@ export async function loadEvents(date: string = todayKey()): Promise<PersistedEv
 }
 
 export async function readJSON<T>(filename: string, defaultValue: T): Promise<T> {
-  const filepath = join(DATA_DIR, filename);
+  const filepath = join(getRuntimeDataDir(), filename);
   try {
     const content = await Bun.file(filepath).text();
     return JSON.parse(content);
@@ -78,8 +78,8 @@ export async function readJSON<T>(filename: string, defaultValue: T): Promise<T>
 }
 
 export async function writeJSON<T>(filename: string, data: T): Promise<void> {
-  await ensureDir(dirname(join(DATA_DIR, filename)));
-  const filepath = join(DATA_DIR, filename);
+  const filepath = join(getRuntimeDataDir(), filename);
+  await ensureDir(dirname(filepath));
   await Bun.write(filepath, JSON.stringify(data, null, 2));
 }
 
@@ -179,25 +179,6 @@ export async function addHistoryEntry(entry: HistoryEntry): Promise<void> {
   await appendEvent('history.added', 'history', { entry }, entry.taskId);
   await writeJSON(`history/${date}.json`, history);
   emitProjectionUpdated('history', entry.taskId);
-}
-
-// Config
-export async function loadConfig(): Promise<Config> {
-  return readJSON('../config.json', {
-    mission: 'Improve code quality',
-    heartbeatInterval: 30000,
-    maxConcurrency: 3,
-    maxRetryAttempts: 3,
-    worktreesDir: '.worktrees',
-    developBranch: 'develop',
-    slaveCommand: 'pi',
-  });
-}
-
-export async function saveConfig(config: Config): Promise<void> {
-  await appendEvent('config.updated', 'config', { config }, 'config');
-  await writeJSON('../config.json', config);
-  emitProjectionUpdated('config', 'config');
 }
 
 // Failed tasks

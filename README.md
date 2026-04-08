@@ -78,10 +78,10 @@ bun install
 git init  # if not already initialized
 ```
 
-4. Configure the system (optional):
+4. Configure the system:
 ```bash
-# Edit config.json to customize settings
-# Or use command-line options
+# Edit .evo-ai/config.json
+# First start must provide --mission
 ```
 
 ## 📖 Usage
@@ -89,11 +89,11 @@ git init  # if not already initialized
 ### Starting the Master
 
 ```bash
-# Start with default mission
-bun run src/index.ts
-
-# Start with custom mission
+# First start with mission
 bun run src/index.ts -m "Improve test coverage to 80%"
+
+# Later starts can resume from master.json
+bun run src/index.ts
 
 # Start with custom heartbeat interval (in seconds)
 bun run src/index.ts -i 60
@@ -146,29 +146,48 @@ bun run src/index.ts --answer <question-id> "your answer"
 
 ## ⚙️ Configuration
 
-Edit `config.json` to customize the system:
+Edit `.evo-ai/config.json` to customize the system:
 
 ```json
 {
-  "mission": "Improve code quality and maintainability",
   "heartbeatInterval": 30000,
   "maxConcurrency": 3,
   "maxRetryAttempts": 3,
   "worktreesDir": ".worktrees",
-  "developBranch": "develop",
-  "slaveCommand": "pi"
+  "developBranch": "main",
+  "models": {
+    "lite": "haiku",
+    "pro": "sonnet",
+    "max": "opus"
+  },
+  "provider": {
+    "apiKey": "",
+    "baseUrl": ""
+  }
 }
 ```
 
 ### Configuration Options
 
-- **mission**: The top-level goal that guides the Master's decisions
 - **heartbeatInterval**: How often (in ms) the Master checks for new actions
 - **maxConcurrency**: Maximum number of slave agents running simultaneously
 - **maxRetryAttempts**: Maximum times a failed task will be retried
 - **worktreesDir**: Directory where git worktrees are created
 - **developBranch**: Branch where completed tasks are merged
-- **slaveCommand**: Command used to spawn slave agents
+- **models.lite**: Light model for simple tasks such as git worktree title generation
+- **models.pro**: Default execution model for all slave roles (inspector / worker / reviewer)
+- **models.max**: Reserved master model for heavyweight master-side reasoning
+- **provider.apiKey**: API key used by the Claude Agent SDK
+- **provider.baseUrl**: Optional API base URL override
+
+Configuration is resolved with deep merge priority:
+
+- global: `XDG config dir/.evo-ai/config.json`
+- local: `<repo>/.evo-ai/config.json`
+
+Runtime state is stored under `<repo>/.evo-ai/.data/`.
+`mission` is not part of config. On first start you must pass `--mission`; after that it is restored from `master.json`.
+`.env` is not used.
 
 ## 📁 Project Structure
 
@@ -193,7 +212,9 @@ evo-ai/
 ├── docs/
 │   └── specs/
 │       └── evo-ai.md         # Project specification
-├── config.json               # Configuration file
+├── .evo-ai/
+│   ├── config.json          # Local static config
+│   └── .data/               # Runtime state
 ├── tsconfig.json            # TypeScript config
 └── package.json             # Project metadata
 ```

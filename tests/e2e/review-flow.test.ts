@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { SlaveLauncher, runWorker, runReviewer } from '../../src/slave/launcher';
 import { loadTasks, updateTask, addTask } from '../../src/utils/storage';
-import { removeWorktree, deleteBranch, getDiff, getDevelopBranch } from '../../src/utils/git';
+import { removeWorktree, deleteBranch, getDiff } from '../../src/utils/git';
 import { setupTestEnv, teardownTestEnv } from './setup';
 import {
   createTestTask,
@@ -24,10 +24,11 @@ afterAll(async () => {
 });
 
 const E2E_TIMEOUT = 180_000;
+const TEST_BASE_BRANCH = 'main';
 
 describe('Review 流程', () => {
   test('Worker 执行 + Reviewer 审查完整流程', async () => {
-    const baseBranch = await getDevelopBranch();
+    const baseBranch = TEST_BASE_BRANCH;
 
     // 1. Worker 执行任务
     const task = createSimpleWorkTask(testDir);

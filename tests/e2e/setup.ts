@@ -5,22 +5,39 @@ import { tmpdir } from 'os';
 
 let testDir: string;
 let dataDir: string;
-let originalDataDir: string | undefined;
 
 /**
  * 初始化测试环境：创建临时目录和 git repo
  */
 export async function setupTestEnv(): Promise<{ testDir: string; dataDir: string }> {
   testDir = join(tmpdir(), `evo-ai-test-${Date.now()}`);
-  dataDir = join(testDir, 'data');
+  dataDir = join(testDir, '.evo-ai', '.data');
 
   // 创建临时目录
   await mkdir(testDir, { recursive: true });
   await mkdir(dataDir, { recursive: true });
+  await mkdir(join(testDir, '.evo-ai'), { recursive: true });
   await mkdir(join(testDir, '.worktrees'), { recursive: true });
+  await writeFile(join(testDir, '.evo-ai', 'config.json'), JSON.stringify({
+    heartbeatInterval: 30000,
+    maxConcurrency: 3,
+    maxRetryAttempts: 3,
+    worktreesDir: '.worktrees',
+    developBranch: 'main',
+    models: {
+      lite: 'haiku',
+      pro: 'sonnet',
+      max: 'opus',
+    },
+    provider: {
+      apiKey: process.env.ANTHROPIC_API_KEY || '',
+      baseUrl: process.env.ANTHROPIC_BASE_URL || '',
+    },
+  }, null, 2));
 
   // 初始化 git repo
   await runCmd('git', ['init'], testDir);
+  await runCmd('git', ['checkout', '-b', 'main'], testDir);
   await runCmd('git', ['config', 'user.email', 'test@evo-ai.dev'], testDir);
   await runCmd('git', ['config', 'user.name', 'Evo AI Test'], testDir);
 
@@ -30,10 +47,6 @@ export async function setupTestEnv(): Promise<{ testDir: string; dataDir: string
   await runCmd('git', ['add', '-A'], testDir);
   await runCmd('git', ['commit', '-m', 'Initial commit'], testDir);
 
-  // 设置 DATA_DIR 环境变量
-  originalDataDir = process.env.DATA_DIR;
-  process.env.DATA_DIR = dataDir;
-
   return { testDir, dataDir };
 }
 
@@ -41,13 +54,6 @@ export async function setupTestEnv(): Promise<{ testDir: string; dataDir: string
  * 清理测试环境
  */
 export async function teardownTestEnv(): Promise<void> {
-  // 恢复环境变量
-  if (originalDataDir !== undefined) {
-    process.env.DATA_DIR = originalDataDir;
-  } else {
-    delete process.env.DATA_DIR;
-  }
-
   // 清理临时目录
   if (testDir && existsSync(testDir)) {
     await rm(testDir, { recursive: true, force: true });

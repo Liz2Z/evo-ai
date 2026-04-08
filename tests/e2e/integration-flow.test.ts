@@ -6,7 +6,7 @@ import {
   addTask, loadTasks, updateTask, loadSlaves,
 } from '../../src/utils/storage';
 import {
-  removeWorktree, deleteBranch, mergeBranch, getDiff, getDevelopBranch,
+  removeWorktree, deleteBranch, mergeBranch, getDiff,
 } from '../../src/utils/git';
 import { setupTestEnv, teardownTestEnv } from './setup';
 import {
@@ -35,10 +35,11 @@ async function cleanupWorktree(worktree: string, branch: string) {
 }
 
 const E2E_TIMEOUT = 180_000;
+const TEST_BASE_BRANCH = 'main';
 
 describe('完整集成流程', () => {
   test('手动创建任务 → Worker 执行 → Reviewer 通过 → 合并', async () => {
-    const baseBranch = await getDevelopBranch();
+    const baseBranch = TEST_BASE_BRANCH;
     const task = createSimpleWorkTask(testDir);
 
     // 1. 添加任务到 storage
@@ -124,7 +125,7 @@ describe('完整集成流程', () => {
       const task = discoveredTasks[0];
       await addTask(task);
 
-      const baseBranch = await getDevelopBranch();
+      const baseBranch = TEST_BASE_BRANCH;
       const result = await runWorker(
         task,
         testMission(),
@@ -144,7 +145,7 @@ describe('完整集成流程', () => {
   }, E2E_TIMEOUT * 2);
 
   test('Worker + Review + 重试流程', async () => {
-    const baseBranch = await getDevelopBranch();
+    const baseBranch = TEST_BASE_BRANCH;
     const task = createTestTask({
       description: 'Create a file called retry-test.txt with content "E2E test passed"',
       maxAttempts: 3,

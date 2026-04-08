@@ -1,11 +1,12 @@
 import { join, resolve } from 'path';
 import { readFileSync } from 'fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { SlaveType, Task, TaskResult, ReviewResult } from '../types';
+import type { Config, ModelTier, SlaveType, Task, TaskResult, ReviewResult } from '../types';
 import { addHistoryEntry, updateSlave } from '../utils/storage';
 import { createWorktree, getDiff, getChangedFiles, removeWorktree } from '../utils/git';
 import { SlaveLogger } from '../utils/logger';
 import type { LogMessageEvent } from '../types/events';
+import { getProviderSdkEnv, loadResolvedConfig } from '../config';
 
 const PROMPTS_DIR = join(import.meta.dir, 'prompts');
 
@@ -43,6 +44,12 @@ class RateLimiter {
 }
 
 const apiLimiter = new RateLimiter(2, 2000); // Max 2 concurrent, 2s between calls
+type ModelPurpose = 'taskTitle' | 'slave' | 'master';
+const MODEL_TIER_BY_PURPOSE: Record<ModelPurpose, ModelTier> = {
+  taskTitle: 'lite',
+  slave: 'pro',
+  master: 'max',
+};
 
 function loadPrompt(type: SlaveType): string {
   const filename = `${type}.md`;
@@ -77,28 +84,26 @@ function sanitizeModelTitle(input: string): string {
     .slice(0, 40);
 }
 
-// Load .env file and return env vars for SDK
-function getEnvConfig(): Record<string, string | undefined> {
-  // 优先使用 ENV_FILE 环境变量指定的文件，其次 .env.test（测试模式），最后 .env
-  const envFile = process.env.ENV_FILE || (process.env.NODE_ENV === 'test' ? '.env.test' : '.env');
-  const envPath = join(process.cwd(), envFile);
+export function getModelTierForPurpose(purpose: ModelPurpose): ModelTier {
+  return MODEL_TIER_BY_PURPOSE[purpose];
+}
+
+export function getConfiguredModel(config: Pick<Config, 'models'>, purpose: ModelPurpose): string | undefined {
+  const tier = getModelTierForPurpose(purpose);
+  const model = config.models?.[tier]?.trim();
+  return model ? model : undefined;
+}
+
+function buildSdkEnv(config: Pick<Config, 'provider'>): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env as Record<string, string | undefined> };
-
-  try {
-    const content = readFileSync(envPath, 'utf-8');
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const match = trimmed.match(/^(\w+)="?(.+?)"?$/);
-      if (match) {
-        env[match[1]] = match[2];
-      }
-    }
-  } catch {
-    // .env file not found, use process.env
-  }
-
-  return env;
+  delete env.API_KEY;
+  delete env.BASE_URL;
+  delete env.ANTHROPIC_API_KEY;
+  delete env.ANTHROPIC_BASE_URL;
+  return {
+    ...env,
+    ...getProviderSdkEnv(config),
+  };
 }
 
 export interface SlaveOptions {
@@ -168,23 +173,19 @@ export class SlaveLauncher {
       const contextPrompt = this.buildContextPrompt();
       const fullSystemPrompt = `${basePrompt}\n\n${contextPrompt}`;
 
-      // For worker type, create worktree first
-      // Get env config from .env file
-      const envConfig = getEnvConfig();
-
-      // Map .env vars to SDK expected env vars
-      const sdkEnv: Record<string, string | undefined> = {
-        ...envConfig,
-        // Map API_KEY to ANTHROPIC_API_KEY if not already set
-        ANTHROPIC_API_KEY: envConfig.ANTHROPIC_API_KEY || envConfig.API_KEY,
-        // Map BASE_URL to ANTHROPIC_BASE_URL if not already set
-        ANTHROPIC_BASE_URL: envConfig.ANTHROPIC_BASE_URL || envConfig.BASE_URL,
-      };
+      const config = await loadResolvedConfig();
+      const sdkEnv = buildSdkEnv(config);
+      const slaveModel = getConfiguredModel(config, 'slave');
 
       if (this.type === 'worker' && this.options.baseBranch) {
         this.log('info', `Creating worktree from ${this.options.baseBranch}`);
-        const semanticTitle = await this.generateWorktreeTitle(sdkEnv);
-        const worktreeResult = await createWorktree(this.task, this.options.baseBranch, semanticTitle);
+        const semanticTitle = await this.generateWorktreeTitle(sdkEnv, config);
+        const worktreeResult = await createWorktree(
+          this.task,
+          this.options.baseBranch,
+          semanticTitle,
+          config.worktreesDir,
+        );
         if (worktreeResult) {
           this.worktreePath = worktreeResult.path;
           this.branch = worktreeResult.branch;
@@ -225,6 +226,7 @@ export class SlaveLauncher {
             systemPrompt: fullSystemPrompt,
             cwd: resolve(workingDir),
             env: sdkEnv,
+            ...(slaveModel ? { model: slaveModel } : {}),
             permissionMode: 'bypassPermissions',
             allowDangerouslySkipPermissions: true,
             maxTurns: this.type === 'inspector' ? 10 : 20,
@@ -406,7 +408,10 @@ export class SlaveLauncher {
     await this.cleanup();
   }
 
-  private async generateWorktreeTitle(env: Record<string, string | undefined>): Promise<string> {
+  private async generateWorktreeTitle(
+    env: Record<string, string | undefined>,
+    config: Pick<Config, 'models'>
+  ): Promise<string> {
     if (!env.ANTHROPIC_API_KEY) {
       return fallbackTitleFromTask(this.task);
     }
@@ -427,8 +432,9 @@ export class SlaveLauncher {
         allowDangerouslySkipPermissions: true,
         maxTurns: 1,
       };
-      if (process.env.WORKTREE_TITLE_MODEL) {
-        queryOptions.model = process.env.WORKTREE_TITLE_MODEL;
+      const titleModel = getConfiguredModel(config, 'taskTitle');
+      if (titleModel) {
+        queryOptions.model = titleModel;
       }
 
       const q = query({

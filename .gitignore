@@ -2,6 +2,7 @@ node_modules/
 dist/
 .worktrees/
 data/
+.evo-ai/.data/
 *.log
 .DS_Store
 .env

@@ -8,6 +8,7 @@
         "@anthropic-ai/claude-agent-sdk": "^0.2.77",
         "ink": "^6.8.0",
         "react": "^19.2.4",
+        "xdg-basedir": "^5.1.0",
       },
       "devDependencies": {
         "@types/bun": "latest",
@@ -142,6 +143,8 @@
     "wrap-ansi": ["wrap-ansi@9.0.2", "http://registry.npm.qima-inc.com/wrap-ansi/download/wrap-ansi-9.0.2.tgz", { "dependencies": { "ansi-styles": "^6.2.1", "string-width": "^7.0.0", "strip-ansi": "^7.1.0" } }, "sha1-lWgy3qlJQwbm0gnrhxZDu4c9fJg="],
 
     "ws": ["ws@8.20.0", "http://registry.npm.qima-inc.com/ws/download/ws-8.20.0.tgz", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha1-TNlTI1jrpgvIY6rRYj37BFpNSvg="],
+
+    "xdg-basedir": ["xdg-basedir@5.1.0", "http://registry.npm.qima-inc.com/xdg-basedir/download/xdg-basedir-5.1.0.tgz", {}, "sha1-HvuhlCXnO+G8byps61Kj0siEwMk="],
 
     "yoga-layout": ["yoga-layout@3.2.1", "http://registry.npm.qima-inc.com/yoga-layout/download/yoga-layout-3.2.1.tgz", {}, "sha1-0tG6BvDoHC62UMPlrYsLSt3h6EM="],
 

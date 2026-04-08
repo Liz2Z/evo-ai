@@ -1,21 +1,17 @@
 import { EventEmitter } from 'events';
 import { existsSync, unlinkSync, writeFileSync, readFileSync } from 'fs';
-import { join } from 'path';
 import type { Task, Config, MasterState, ReviewResult, TaskResult } from '../types';
 import {
   loadTasks, saveTasks, updateTask, addTask,
   loadMasterState, saveMasterState,
   loadSlaves, saveSlaves,
   addHistoryEntry, loadHistory,
-  loadConfig, addFailedTask, loadFailedTasks
+  addFailedTask, loadFailedTasks
 } from '../utils/storage';
-import { getDevelopBranch, mergeBranch, deleteBranch, removeWorktree, getDiff, listWorktrees } from '../utils/git';
+import { mergeBranch, deleteBranch, removeWorktree, getDiff, listWorktrees } from '../utils/git';
 import { runInspector, runWorker, runReviewer } from '../slave/launcher';
 import type { HeartbeatTickEvent, TaskStatusChangeEvent, MasterStateEvent } from '../types/events';
-
-const CONTROL_DIR = join(process.cwd(), 'data');
-const CONTROL_FILE = join(CONTROL_DIR, 'master-control.json');
-const HEALTH_FILE = join(CONTROL_DIR, 'master-health.json');
+import { getControlFilePath, getHealthFilePath } from '../runtime/paths';
 
 export class Master extends EventEmitter {
   private config: Config;
@@ -25,11 +21,11 @@ export class Master extends EventEmitter {
   private isPaused: boolean = false;
   private tickPromise: Promise<void> | null = null;
 
-  constructor(config: Config) {
+  constructor(config: Config, mission: string) {
     super();
     this.config = config;
     this.state = {
-      mission: config.mission,
+      mission,
       currentPhase: 'initializing',
       lastHeartbeat: '',
       lastInspection: '',
@@ -43,10 +39,11 @@ export class Master extends EventEmitter {
 
     // Load saved state
     const savedState = await loadMasterState();
-    if (savedState.mission) {
-      this.state = { ...savedState, mission: this.config.mission || savedState.mission };
-      this.isPaused = savedState.currentPhase === 'paused';
-    }
+    this.state = {
+      ...savedState,
+      mission: this.state.mission || savedState.mission,
+    };
+    this.isPaused = savedState.currentPhase === 'paused';
 
     console.log(`Master starting with mission: ${this.state.mission}`);
     console.log(`Heartbeat interval: ${this.config.heartbeatInterval}ms`);
@@ -66,6 +63,8 @@ export class Master extends EventEmitter {
 
     // Clear any stale control file
     this.clearControlFile();
+
+    await saveMasterState(this.state);
 
     // Run one tick immediately, then continue heartbeat loop
     this.tickPromise = this.tick().finally(() => {
@@ -265,7 +264,7 @@ export class Master extends EventEmitter {
     this.activeSlaves++;
 
     const recentDecisions = await this.getRecentDecisions();
-    const baseBranch = await getDevelopBranch();
+    const baseBranch = this.config.developBranch;
 
     // Run worker in background
     runWorker(task, this.state.mission, recentDecisions, '', baseBranch)
@@ -336,7 +335,7 @@ export class Master extends EventEmitter {
 
     console.log(`Assigning reviewer to task ${task.id}`);
     
-    const baseBranch = await getDevelopBranch();
+    const baseBranch = this.config.developBranch;
     const diff = await getDiff(task.branch, baseBranch, task.worktree);
     
     if (!diff) {
@@ -451,7 +450,7 @@ export class Master extends EventEmitter {
 
       console.log(`Merging task ${task.id}`);
       
-      const baseBranch = await getDevelopBranch();
+      const baseBranch = this.config.developBranch;
       const result = await mergeBranch(task.branch, baseBranch);
 
       if (result.success) {
@@ -589,9 +588,10 @@ export class Master extends EventEmitter {
   // --- Control file communication ---
 
   private checkControlFile(): void {
+    const controlFile = getControlFilePath();
     try {
-      if (!existsSync(CONTROL_FILE)) return;
-      const content = readFileSync(CONTROL_FILE, 'utf-8');
+      if (!existsSync(controlFile)) return;
+      const content = readFileSync(controlFile, 'utf-8');
       const cmd = JSON.parse(content);
       this.clearControlFile();
 
@@ -609,16 +609,18 @@ export class Master extends EventEmitter {
   }
 
   private clearControlFile(): void {
+    const controlFile = getControlFilePath();
     try {
-      if (existsSync(CONTROL_FILE)) unlinkSync(CONTROL_FILE);
+      if (existsSync(controlFile)) unlinkSync(controlFile);
     } catch {
       // ignore
     }
   }
 
   private writeHealthFile(): void {
+    const healthFile = getHealthFilePath();
     try {
-      writeFileSync(HEALTH_FILE, JSON.stringify({
+      writeFileSync(healthFile, JSON.stringify({
         pid: process.pid,
         phase: this.state.currentPhase,
         isPaused: this.isPaused,
@@ -647,8 +649,9 @@ export class Master extends EventEmitter {
     }
 
     const allWorktrees = await listWorktrees();
+    const worktreesDirName = this.config.worktreesDir.split('/').filter(Boolean).pop() || this.config.worktreesDir;
     const staleWorktrees = allWorktrees.filter(w =>
-      w.includes('.worktrees') && !activeWorktrees.has(w)
+      w.includes(worktreesDirName) && !activeWorktrees.has(w)
     );
 
     for (const wt of staleWorktrees) {

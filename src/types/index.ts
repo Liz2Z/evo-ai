@@ -103,14 +103,27 @@ export interface LogEntry {
 }
 
 // Config
+export type ModelTier = 'lite' | 'pro' | 'max';
+
+export interface ModelTierConfig {
+  lite: string;
+  pro: string;
+  max: string;
+}
+
+export interface ProviderConfig {
+  apiKey?: string;
+  baseUrl?: string;
+}
+
 export interface Config {
-  mission: string;
   heartbeatInterval: number;
   maxConcurrency: number;
   maxRetryAttempts: number;
   worktreesDir: string;
   developBranch: string;
-  slaveCommand: string;
+  models: ModelTierConfig;
+  provider: ProviderConfig;
 }
 
 // Persisted event log entry (append-only)

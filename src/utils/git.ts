@@ -26,14 +26,9 @@ export async function getCurrentBranch(cwd?: string): Promise<string> {
   return result.stdout;
 }
 
-export async function getDevelopBranch(): Promise<string> {
-  // Try common develop branch names
-  const branches = ['develop', 'main', 'master'];
-  for (const branch of branches) {
-    const result = await runGit(['rev-parse', '--verify', branch]);
-    if (result.exitCode === 0) return branch;
-  }
-  return 'main';
+export async function branchExists(branch: string, cwd?: string): Promise<boolean> {
+  const result = await runGit(['rev-parse', '--verify', branch], cwd);
+  return result.exitCode === 0;
 }
 
 function sanitizeSlug(input: string, maxLen = 40): string {
@@ -80,7 +75,8 @@ function shortStableHash(input: string): string {
 export async function createWorktree(
   task: Task,
   baseBranch: string,
-  semanticTitle?: string
+  semanticTitle?: string,
+  worktreesDir: string = '.worktrees'
 ): Promise<{ path: string; branch: string } | null> {
   const branchName = `task/${task.id}`;
   const existing = await findExistingTaskWorktree(task.id);
@@ -93,7 +89,7 @@ export async function createWorktree(
   const hash = shortStableHash(task.id);
   // Naming rule: semantic first, followed by timestamp and hash
   const worktreeName = `${titleSlug}-${timestamp}-${hash}`;
-  const worktreePath = join(process.cwd(), '.worktrees', worktreeName);
+  const worktreePath = join(process.cwd(), worktreesDir, worktreeName);
 
   // Create worktree with new branch
   const result = await runGit([

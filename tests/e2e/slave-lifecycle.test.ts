@@ -3,7 +3,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { SlaveLauncher, runInspector, runWorker, runReviewer } from '../../src/slave/launcher';
 import { loadSlaves, loadTasks } from '../../src/utils/storage';
-import { removeWorktree, deleteBranch, getDevelopBranch } from '../../src/utils/git';
+import { removeWorktree, deleteBranch } from '../../src/utils/git';
 import { setupTestEnv, teardownTestEnv } from './setup';
 import {
   createTestTask,
@@ -27,6 +27,7 @@ afterAll(async () => {
 
 // E2E 测试需要较长的超时（Claude API 调用）
 const E2E_TIMEOUT = 180_000;
+const TEST_BASE_BRANCH = 'main';
 
 describe('Slave 生命周期', () => {
   test('Inspector 扫描代码库', async () => {
@@ -46,7 +47,7 @@ describe('Slave 生命周期', () => {
 
   test('Worker 执行简单任务并创建 worktree', async () => {
     const task = createSimpleWorkTask(testDir);
-    const baseBranch = await getDevelopBranch();
+    const baseBranch = TEST_BASE_BRANCH;
 
     const result = await runWorker(
       task,
@@ -108,7 +109,7 @@ index 1234567..abcdefg 100644
       task,
       mission: testMission(),
       recentDecisions: testRecentDecisions(),
-      baseBranch: await getDevelopBranch(),
+      baseBranch: TEST_BASE_BRANCH,
     });
 
     const { slaveId } = await launcher.start();
@@ -153,7 +154,7 @@ index 1234567..abcdefg 100644
       task,
       mission: testMission(),
       recentDecisions: testRecentDecisions(),
-      baseBranch: await getDevelopBranch(),
+      baseBranch: TEST_BASE_BRANCH,
     });
 
     const { slaveId } = await launcher.start();

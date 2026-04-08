@@ -1,26 +1,13 @@
 #!/usr/bin/env bun
 import { parseArgs } from 'util';
 import { existsSync, writeFileSync, readFileSync, mkdirSync } from 'fs';
-import { join } from 'path';
 import { Master } from './master/scheduler';
-import { loadConfig, saveConfig, loadMasterState, addQuestion, answerQuestion, loadTasks, loadFailedTasks } from './utils/storage';
-import { isGitRepo } from './utils/git';
+import { loadMasterState, answerQuestion, loadTasks, loadFailedTasks } from './utils/storage';
+import { branchExists, isGitRepo } from './utils/git';
 import { startTUI } from './tui/index';
-import type { Config, Task } from './types';
-
-const DATA_DIR = join(process.cwd(), 'data');
-const CONTROL_FILE = join(DATA_DIR, 'master-control.json');
-const HEALTH_FILE = join(DATA_DIR, 'master-health.json');
-
-const DEFAULT_CONFIG: Config = {
-  mission: 'Improve code quality and maintainability',
-  heartbeatInterval: 30000,
-  maxConcurrency: 3,
-  maxRetryAttempts: 3,
-  worktreesDir: '.worktrees',
-  developBranch: 'develop',
-  slaveCommand: 'pi',
-};
+import { loadResolvedConfig, resolveStartupMission } from './config';
+import { getControlFilePath, getHealthFilePath, getRuntimeDataDir } from './runtime/paths';
+import type { Task } from './types';
 
 // Helper to get string value from parsed args
 function getString(value: string | boolean | undefined): string | undefined {
@@ -121,17 +108,14 @@ async function main() {
     process.exit(1);
   }
 
-  // Load or create config
-  let config = await loadConfig();
+  let config = await loadResolvedConfig();
+  const savedState = await loadMasterState();
   
   // Apply command line overrides
-  const mission = getString(values.mission);
+  const cliMission = getString(values.mission);
   const interval = getString(values.interval);
   const concurrency = getString(values.concurrency);
   
-  if (mission) {
-    config.mission = mission;
-  }
   if (interval) {
     const parsed = parseInt(interval);
     if (isNaN(parsed) || parsed < 1) {
@@ -149,11 +133,21 @@ async function main() {
     config.maxConcurrency = parsed;
   }
 
-  // Save config
-  await saveConfig(config);
+  if (!await branchExists(config.developBranch)) {
+    console.error(`Error: Configured develop branch does not exist: ${config.developBranch}`);
+    process.exit(1);
+  }
+
+  let resolvedMission: string;
+  try {
+    resolvedMission = resolveStartupMission(savedState.mission, cliMission);
+  } catch (error) {
+    console.error((error as Error).message);
+    process.exit(1);
+  }
 
   // Create and start master
-  const master = new Master(config);
+  const master = new Master(config, resolvedMission);
 
   // Handle signals
   process.on('SIGINT', async () => {
@@ -266,7 +260,7 @@ async function printStatus() {
 
   console.log('\n=== Master Status ===\n');
   console.log(`Running: ${healthy ? 'Yes (PID: ' + (healthy ? getMasterPid() : 'N/A') + ')' : 'No'}`);
-  console.log(`Mission: ${state.mission || (await loadConfig()).mission}`);
+  console.log(`Mission: ${state.mission || 'Not set. Start with --mission <text>.'}`);
   console.log(`Current Phase: ${state.currentPhase}`);
   console.log(`Active Since: ${state.activeSince}`);
   console.log(`Last Heartbeat: ${state.lastHeartbeat || 'Never'}`);
@@ -282,7 +276,7 @@ async function printStatus() {
 
 function getMasterPid(): string {
   try {
-    const health = JSON.parse(readFileSync(HEALTH_FILE, 'utf-8'));
+    const health = JSON.parse(readFileSync(getHealthFilePath(), 'utf-8'));
     return String(health.pid ?? 'unknown');
   } catch {
     return 'unknown';
@@ -335,16 +329,18 @@ async function printFailedTasks() {
 }
 
 function sendControlCommand(action: 'pause' | 'resume' | 'stop'): void {
-  if (!existsSync(DATA_DIR)) {
-    mkdirSync(DATA_DIR, { recursive: true });
+  const dataDir = getRuntimeDataDir();
+  if (!existsSync(dataDir)) {
+    mkdirSync(dataDir, { recursive: true });
   }
-  writeFileSync(CONTROL_FILE, JSON.stringify({ action, timestamp: new Date().toISOString() }));
+  writeFileSync(getControlFilePath(), JSON.stringify({ action, timestamp: new Date().toISOString() }));
 }
 
 async function isMasterHealthy(): Promise<boolean> {
-  if (!existsSync(HEALTH_FILE)) return false;
+  const healthFile = getHealthFilePath();
+  if (!existsSync(healthFile)) return false;
   try {
-    const health = JSON.parse(readFileSync(HEALTH_FILE, 'utf-8'));
+    const health = JSON.parse(readFileSync(healthFile, 'utf-8'));
     const pid = Number(health.pid);
     if (!Number.isFinite(pid) || pid <= 0) return false;
 
@@ -356,7 +352,7 @@ async function isMasterHealthy(): Promise<boolean> {
     }
 
     const age = Date.now() - new Date(health.timestamp).getTime();
-    const heartbeatInterval = Number(health.heartbeatInterval) || (await loadConfig()).heartbeatInterval || 30000;
+    const heartbeatInterval = Number(health.heartbeatInterval) || (await loadResolvedConfig()).heartbeatInterval || 30000;
     // Consider unhealthy if heartbeat is older than 2x configured interval (+5s grace)
     return age < heartbeatInterval * 2 + 5000;
   } catch {
