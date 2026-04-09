@@ -1,3 +1,4 @@
+// Auto-generated
 import { Settings } from "./core";
 import { configSchema } from "./schemas";
 
