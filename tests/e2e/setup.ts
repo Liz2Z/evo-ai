@@ -34,6 +34,9 @@ export async function setupTestEnv(): Promise<{ testDir: string; dataDir: string
       apiKey: process.env.ANTHROPIC_API_KEY || '',
       baseUrl: process.env.ANTHROPIC_BASE_URL || '',
     },
+    master: {
+      runtimeMode: 'hybrid',
+    },
   }, null, 2));
 
   // 初始化 git repo

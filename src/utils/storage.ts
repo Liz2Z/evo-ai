@@ -156,6 +156,10 @@ export async function loadMasterState(): Promise<MasterState> {
     lastInspection: '',
     activeSince: new Date().toISOString(),
     pendingQuestions: [],
+    runtimeMode: 'hybrid',
+    lastDecisionAt: '',
+    turnStatus: 'idle',
+    skippedWakeups: 0,
   });
 }
 

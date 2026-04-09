@@ -1,18 +1,39 @@
 #!/usr/bin/env bun
 // Auto-generated
-import { parseArgs } from 'util';
-import { existsSync, writeFileSync, readFileSync, mkdirSync } from 'fs';
-import { Master } from './master/scheduler';
-import { loadMasterState, answerQuestion, loadTasks, loadFailedTasks } from './utils/storage';
-import { branchExists, isGitRepo } from './utils/git';
-import { startTUI } from './tui/index';
-import { loadResolvedConfig, resolveStartupMission } from './config';
-import { getControlFilePath, getHealthFilePath, getRuntimeDataDir } from './runtime/paths';
-import type { Task } from './types';
+import { parseArgs } from "util";
+import { existsSync, writeFileSync, readFileSync, mkdirSync } from "fs";
+import { settings } from "./config";
+
+import { Master } from "./master/scheduler";
+import {
+  loadMasterState,
+  answerQuestion,
+  loadTasks,
+  loadFailedTasks,
+} from "./utils/storage";
+import { branchExists, isGitRepo } from "./utils/git";
+import { startTUI } from "./tui/index";
+import {
+  getControlFilePath,
+  getHealthFilePath,
+  getRuntimeDataDir,
+} from "./runtime/paths";
+import type { Task } from "./types";
+
+function resolveStartupMission(
+  savedMission?: string,
+  cliMission?: string,
+): string {
+  const mission = cliMission?.trim() || savedMission?.trim() || "";
+  if (!mission) {
+    throw new Error("Mission is required. Please specify it with --mission.");
+  }
+  return mission;
+}
 
 // Helper to get string value from parsed args
 function getString(value: string | boolean | undefined): string | undefined {
-  return typeof value === 'string' ? value : undefined;
+  return typeof value === "string" ? value : undefined;
 }
 
 async function main() {
@@ -20,53 +41,53 @@ async function main() {
     args: Bun.argv.slice(2),
     options: {
       mission: {
-        type: 'string',
-        short: 'm',
+        type: "string",
+        short: "m",
       },
       interval: {
-        type: 'string',
-        short: 'i',
+        type: "string",
+        short: "i",
       },
       concurrency: {
-        type: 'string',
-        short: 'c',
+        type: "string",
+        short: "c",
       },
       config: {
-        type: 'string',
+        type: "string",
       },
       pause: {
-        type: 'boolean',
-        short: 'p',
+        type: "boolean",
+        short: "p",
       },
       resume: {
-        type: 'boolean',
-        short: 'r',
+        type: "boolean",
+        short: "r",
       },
       cancel: {
-        type: 'string',
+        type: "string",
       },
       add: {
-        type: 'string',
-        short: 'a',
+        type: "string",
+        short: "a",
       },
       answer: {
-        type: 'string',
+        type: "string",
       },
       status: {
-        type: 'boolean',
-        short: 's',
+        type: "boolean",
+        short: "s",
       },
       tasks: {
-        type: 'boolean',
-        short: 't',
+        type: "boolean",
+        short: "t",
       },
       failed: {
-        type: 'boolean',
-        short: 'f',
+        type: "boolean",
+        short: "f",
       },
       help: {
-        type: 'boolean',
-        short: 'h',
+        type: "boolean",
+        short: "h",
       },
     },
     strict: false,
@@ -104,23 +125,25 @@ async function main() {
   }
 
   // Check if we're in a git repo
-  if (!await isGitRepo()) {
-    console.error('Error: Not in a git repository. Please run from a git repo.');
+  if (!(await isGitRepo())) {
+    console.error(
+      "Error: Not in a git repository. Please run from a git repo.",
+    );
     process.exit(1);
   }
 
-  let config = await loadResolvedConfig();
+  let config = settings.get();
   const savedState = await loadMasterState();
-  
+
   // Apply command line overrides
   const cliMission = getString(values.mission);
   const interval = getString(values.interval);
   const concurrency = getString(values.concurrency);
-  
+
   if (interval) {
     const parsed = parseInt(interval);
     if (isNaN(parsed) || parsed < 1) {
-      console.error('Error: --interval must be a positive number (seconds).');
+      console.error("Error: --interval must be a positive number (seconds).");
       process.exit(1);
     }
     config.heartbeatInterval = parsed * 1000;
@@ -128,14 +151,16 @@ async function main() {
   if (concurrency) {
     const parsed = parseInt(concurrency);
     if (isNaN(parsed) || parsed < 1 || parsed > 20) {
-      console.error('Error: --concurrency must be between 1 and 20.');
+      console.error("Error: --concurrency must be between 1 and 20.");
       process.exit(1);
     }
     config.maxConcurrency = parsed;
   }
 
-  if (!await branchExists(config.developBranch)) {
-    console.error(`Error: Configured develop branch does not exist: ${config.developBranch}`);
+  if (!(await branchExists(config.developBranch))) {
+    console.error(
+      `Error: Configured develop branch does not exist: ${config.developBranch}`,
+    );
     process.exit(1);
   }
 
@@ -151,35 +176,35 @@ async function main() {
   const master = new Master(config, resolvedMission);
 
   // Handle signals
-  process.on('SIGINT', async () => {
-    console.log('\nShutting down...');
+  process.on("SIGINT", async () => {
+    console.log("\nShutting down...");
     await master.stop();
     process.exit(0);
   });
 
-  process.on('SIGTERM', async () => {
+  process.on("SIGTERM", async () => {
     await master.stop();
     process.exit(0);
   });
 
   // Handle commands that require running master
   if (values.pause) {
-    if (!await isMasterHealthy()) {
-      console.error('Error: Master is not running.');
+    if (!(await isMasterHealthy())) {
+      console.error("Error: Master is not running.");
       process.exit(1);
     }
-    sendControlCommand('pause');
-    console.log('Pause command sent to master.');
+    sendControlCommand("pause");
+    console.log("Pause command sent to master.");
     process.exit(0);
   }
 
   if (values.resume) {
-    if (!await isMasterHealthy()) {
-      console.error('Error: Master is not running.');
+    if (!(await isMasterHealthy())) {
+      console.error("Error: Master is not running.");
       process.exit(1);
     }
-    sendControlCommand('resume');
-    console.log('Resume command sent to master.');
+    sendControlCommand("resume");
+    console.log("Resume command sent to master.");
     process.exit(0);
   }
 
@@ -218,10 +243,10 @@ async function main() {
   };
 
   // Remove earlier signal handlers and replace with unified cleanup
-  process.removeAllListeners('SIGINT');
-  process.removeAllListeners('SIGTERM');
-  process.on('SIGINT', cleanup);
-  process.on('SIGTERM', cleanup);
+  process.removeAllListeners("SIGINT");
+  process.removeAllListeners("SIGTERM");
+  process.on("SIGINT", cleanup);
+  process.on("SIGTERM", cleanup);
 }
 
 function printHelp() {
@@ -259,17 +284,21 @@ async function printStatus() {
   const state = await loadMasterState();
   const healthy = await isMasterHealthy();
 
-  console.log('\n=== Master Status ===\n');
-  console.log(`Running: ${healthy ? 'Yes (PID: ' + (healthy ? getMasterPid() : 'N/A') + ')' : 'No'}`);
-  console.log(`Mission: ${state.mission || 'Not set. Start with --mission <text>.'}`);
+  console.log("\n=== Master Status ===\n");
+  console.log(
+    `Running: ${healthy ? "Yes (PID: " + (healthy ? getMasterPid() : "N/A") + ")" : "No"}`,
+  );
+  console.log(
+    `Mission: ${state.mission || "Not set. Start with --mission <text>."}`,
+  );
   console.log(`Current Phase: ${state.currentPhase}`);
   console.log(`Active Since: ${state.activeSince}`);
-  console.log(`Last Heartbeat: ${state.lastHeartbeat || 'Never'}`);
-  console.log(`Last Inspection: ${state.lastInspection || 'Never'}`);
+  console.log(`Last Heartbeat: ${state.lastHeartbeat || "Never"}`);
+  console.log(`Last Inspection: ${state.lastInspection || "Never"}`);
 
   if (state.pendingQuestions.length > 0) {
-    console.log('\nPending Questions:');
-    state.pendingQuestions.forEach(q => {
+    console.log("\nPending Questions:");
+    state.pendingQuestions.forEach((q) => {
       console.log(`  [${q.id}] ${q.question}`);
     });
   }
@@ -277,71 +306,81 @@ async function printStatus() {
 
 function getMasterPid(): string {
   try {
-    const health = JSON.parse(readFileSync(getHealthFilePath(), 'utf-8'));
-    return String(health.pid ?? 'unknown');
+    const health = JSON.parse(readFileSync(getHealthFilePath(), "utf-8"));
+    return String(health.pid ?? "unknown");
   } catch {
-    return 'unknown';
+    return "unknown";
   }
 }
 
 async function printTasks() {
   const tasks = await loadTasks();
-  
-  console.log('\n=== Current Tasks ===\n');
-  
+
+  console.log("\n=== Current Tasks ===\n");
+
   if (tasks.length === 0) {
-    console.log('No tasks found.');
+    console.log("No tasks found.");
     return;
   }
 
-  const byStatus = tasks.reduce((acc, t) => {
-    if (!acc[t.status]) acc[t.status] = [];
-    acc[t.status].push(t);
-    return acc;
-  }, {} as Record<string, Task[]>);
+  const byStatus = tasks.reduce(
+    (acc, t) => {
+      if (!acc[t.status]) acc[t.status] = [];
+      acc[t.status].push(t);
+      return acc;
+    },
+    {} as Record<string, Task[]>,
+  );
 
   for (const [status, statusTasks] of Object.entries(byStatus)) {
     console.log(`\n[${status.toUpperCase()}] (${statusTasks.length})`);
-    statusTasks.forEach(t => {
-      console.log(`  ${t.id} (p${t.priority}): ${t.description.slice(0, 60)}...`);
+    statusTasks.forEach((t) => {
+      console.log(
+        `  ${t.id} (p${t.priority}): ${t.description.slice(0, 60)}...`,
+      );
     });
   }
 }
 
 async function printFailedTasks() {
   const failed = await loadFailedTasks();
-  
-  console.log('\n=== Failed Tasks ===\n');
-  
+
+  console.log("\n=== Failed Tasks ===\n");
+
   if (failed.length === 0) {
-    console.log('No failed tasks.');
+    console.log("No failed tasks.");
     return;
   }
 
-  failed.forEach(t => {
+  failed.forEach((t) => {
     console.log(`[${t.id}] Attempt ${t.attemptCount}/${t.maxAttempts}`);
     console.log(`  ${t.description}`);
     if (t.reviewHistory.length > 0) {
       const lastReview = t.reviewHistory[t.reviewHistory.length - 1];
-      console.log(`  Last review: ${lastReview.review.verdict} - ${lastReview.review.summary}`);
+      console.log(
+        `  Last review: ${lastReview.review.verdict} - ${lastReview.review.summary}`,
+      );
     }
-    console.log('');
+    console.log("");
   });
 }
 
-function sendControlCommand(action: 'pause' | 'resume' | 'stop'): void {
+function sendControlCommand(action: "pause" | "resume" | "stop"): void {
   const dataDir = getRuntimeDataDir();
   if (!existsSync(dataDir)) {
     mkdirSync(dataDir, { recursive: true });
   }
-  writeFileSync(getControlFilePath(), JSON.stringify({ action, timestamp: new Date().toISOString() }));
+  writeFileSync(
+    getControlFilePath(),
+    JSON.stringify({ action, timestamp: new Date().toISOString() }),
+  );
 }
 
 async function isMasterHealthy(): Promise<boolean> {
   const healthFile = getHealthFilePath();
   if (!existsSync(healthFile)) return false;
   try {
-    const health = JSON.parse(readFileSync(healthFile, 'utf-8'));
+    const health = JSON.parse(readFileSync(healthFile, "utf-8"));
     const pid = Number(health.pid);
     if (!Number.isFinite(pid) || pid <= 0) return false;
 
@@ -353,7 +392,10 @@ async function isMasterHealthy(): Promise<boolean> {
     }
 
     const age = Date.now() - new Date(health.timestamp).getTime();
-    const heartbeatInterval = Number(health.heartbeatInterval) || (await loadResolvedConfig()).heartbeatInterval || 30000;
+    const heartbeatInterval =
+      Number(health.heartbeatInterval) ||
+      settings.heartbeatInterval.get() ||
+      30000;
     // Consider unhealthy if heartbeat is older than 2x configured interval (+5s grace)
     return age < heartbeatInterval * 2 + 5000;
   } catch {

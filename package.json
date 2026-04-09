@@ -19,7 +19,8 @@
     "@anthropic-ai/claude-agent-sdk": "^0.2.86",
     "ink": "^6.8.0",
     "react": "^19.2.4",
-    "xdg-basedir": "^5.1.0"
+    "xdg-basedir": "^5.1.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/bun": "latest",

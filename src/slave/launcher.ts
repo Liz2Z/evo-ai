@@ -1,15 +1,27 @@
 // Auto-generated
-import { join, resolve } from 'path';
-import { readFileSync } from 'fs';
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { Config, ModelTier, SlaveType, Task, TaskResult, ReviewResult } from '../types';
-import { addHistoryEntry, updateSlave } from '../utils/storage';
-import { createWorktree, getDiff, getChangedFiles, removeWorktree } from '../utils/git';
-import { SlaveLogger } from '../utils/logger';
-import type { LogMessageEvent } from '../types/events';
-import { getProviderSdkEnv, loadResolvedConfig } from '../config';
+import { join, resolve } from "path";
+import { readFileSync } from "fs";
+import { query } from "@anthropic-ai/claude-agent-sdk";
+import type {
+  Config,
+  ModelTier,
+  SlaveType,
+  Task,
+  TaskResult,
+  ReviewResult,
+} from "../types";
+import { addHistoryEntry, updateSlave } from "../utils/storage";
+import {
+  createWorktree,
+  getDiff,
+  getChangedFiles,
+  removeWorktree,
+} from "../utils/git";
+import { SlaveLogger } from "../utils/logger";
+import type { LogMessageEvent } from "../types/events";
+import { settings } from "../config";
 
-const PROMPTS_DIR = join(import.meta.dir, 'prompts');
+const PROMPTS_DIR = join(import.meta.dir, "prompts");
 
 // Rate limiter: ensures minimum delay between API calls
 class RateLimiter {
@@ -24,13 +36,16 @@ class RateLimiter {
 
   async acquire(): Promise<void> {
     // Enforce minimum interval between consecutive calls
-    const wait = Math.max(0, this.minIntervalMs - (Date.now() - this.lastFinish));
+    const wait = Math.max(
+      0,
+      this.minIntervalMs - (Date.now() - this.lastFinish),
+    );
     if (wait > 0) {
-      await new Promise<void>(r => setTimeout(r, wait));
+      await new Promise<void>((r) => setTimeout(r, wait));
     }
 
     if (this.running >= this.maxConcurrent) {
-      await new Promise<void>(resolve => this.queue.push({ resolve }));
+      await new Promise<void>((resolve) => this.queue.push({ resolve }));
     }
 
     this.running++;
@@ -45,16 +60,16 @@ class RateLimiter {
 }
 
 const apiLimiter = new RateLimiter(2, 2000); // Max 2 concurrent, 2s between calls
-type ModelPurpose = 'taskTitle' | 'slave' | 'master';
+type ModelPurpose = "taskTitle" | "slave" | "master";
 const MODEL_TIER_BY_PURPOSE: Record<ModelPurpose, ModelTier> = {
-  taskTitle: 'lite',
-  slave: 'pro',
-  master: 'max',
+  taskTitle: "lite",
+  slave: "pro",
+  master: "max",
 };
 
 function loadPrompt(type: SlaveType): string {
   const filename = `${type}.md`;
-  return readFileSync(join(PROMPTS_DIR, filename), 'utf-8');
+  return readFileSync(join(PROMPTS_DIR, filename), "utf-8");
 }
 
 function generateTaskId(): string {
@@ -66,22 +81,24 @@ function generateSlaveId(type: SlaveType): string {
 }
 
 function fallbackTitleFromTask(task: Task): string {
-  return task.description
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim()
-    .split(/\s+/)
-    .slice(0, 6)
-    .join('-') || `task-${task.id.slice(-7)}`;
+  return (
+    task.description
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim()
+      .split(/\s+/)
+      .slice(0, 6)
+      .join("-") || `task-${task.id.slice(-7)}`
+  );
 }
 
 function sanitizeModelTitle(input: string): string {
   return input
     .toLowerCase()
-    .replace(/[^a-z0-9-_\s]+/g, '')
-    .replace(/[_\s]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-+|-+$/g, '')
+    .replace(/[^a-z0-9-_\s]+/g, "")
+    .replace(/[_\s]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
     .slice(0, 40);
 }
 
@@ -89,23 +106,15 @@ export function getModelTierForPurpose(purpose: ModelPurpose): ModelTier {
   return MODEL_TIER_BY_PURPOSE[purpose];
 }
 
-export function getConfiguredModel(config: Pick<Config, 'models'>, purpose: ModelPurpose): string | undefined {
+export function getConfiguredModel(
+  config: Pick<Config, "models">,
+  purpose: ModelPurpose,
+): string | undefined {
   const tier = getModelTierForPurpose(purpose);
   const model = config.models?.[tier]?.trim();
   return model ? model : undefined;
 }
 
-function buildSdkEnv(config: Pick<Config, 'provider'>): Record<string, string | undefined> {
-  const env: Record<string, string | undefined> = { ...process.env as Record<string, string | undefined> };
-  delete env.API_KEY;
-  delete env.BASE_URL;
-  delete env.ANTHROPIC_API_KEY;
-  delete env.ANTHROPIC_BASE_URL;
-  return {
-    ...env,
-    ...getProviderSdkEnv(config),
-  };
-}
 
 export interface SlaveOptions {
   type: SlaveType;
@@ -137,7 +146,7 @@ export class SlaveLauncher {
     this.onLog = options.onLog;
   }
 
-  private log(level: 'info' | 'error' | 'debug', message: string): void {
+  private log(level: "info" | "error" | "debug", message: string): void {
     const event: LogMessageEvent = {
       slaveId: this.slaveId,
       taskId: this.task.id,
@@ -146,8 +155,8 @@ export class SlaveLauncher {
       timestamp: new Date().toISOString(),
     };
     if (this.logger) {
-      if (level === 'error') this.logger.error(message);
-      else if (level === 'debug') this.logger.debug(message);
+      if (level === "error") this.logger.error(message);
+      else if (level === "debug") this.logger.debug(message);
       else this.logger.info(message);
     }
     if (this.onLog) {
@@ -159,7 +168,7 @@ export class SlaveLauncher {
     await updateSlave(this.slaveId, {
       id: this.slaveId,
       type: this.type,
-      status: 'busy',
+      status: "busy",
       currentTask: this.task.id,
       startedAt: new Date().toISOString(),
     });
@@ -169,18 +178,17 @@ export class SlaveLauncher {
 
   async execute(): Promise<TaskResult | ReviewResult | null> {
     try {
-      this.log('debug', `Preparing ${this.type} slave context`);
+      this.log("debug", `Preparing ${this.type} slave context`);
       const basePrompt = loadPrompt(this.type);
       const contextPrompt = this.buildContextPrompt();
       const fullSystemPrompt = `${basePrompt}\n\n${contextPrompt}`;
 
-      const config = await loadResolvedConfig();
-      const sdkEnv = buildSdkEnv(config);
-      const slaveModel = getConfiguredModel(config, 'slave');
+      const config = settings.get();
+      const slaveModel = getConfiguredModel(config, "slave");
 
-      if (this.type === 'worker' && this.options.baseBranch) {
-        this.log('info', `Creating worktree from ${this.options.baseBranch}`);
-        const semanticTitle = await this.generateWorktreeTitle(sdkEnv, config);
+      if (this.type === "worker" && this.options.baseBranch) {
+        this.log("info", `Creating worktree from ${this.options.baseBranch}`);
+        const semanticTitle = await this.generateWorktreeTitle(config);
         const worktreeResult = await createWorktree(
           this.task,
           this.options.baseBranch,
@@ -191,16 +199,16 @@ export class SlaveLauncher {
           this.worktreePath = worktreeResult.path;
           this.branch = worktreeResult.branch;
           this.shouldRemoveWorktreeOnCleanup = true;
-          this.log('info', `Worktree ready: ${this.branch}`);
+          this.log("info", `Worktree ready: ${this.branch}`);
         } else {
           const message = `Failed to create worktree for task ${this.task.id}`;
-          this.log('error', message);
+          this.log("error", message);
           return {
             taskId: this.task.id,
-            status: 'failed',
-            worktree: '',
-            branch: '',
-            diff: '',
+            status: "failed",
+            worktree: "",
+            branch: "",
+            diff: "",
             summary: message,
             filesChanged: [],
             error: message,
@@ -209,41 +217,46 @@ export class SlaveLauncher {
       }
 
       // Execute using Claude Agent SDK
-      this.log('info', `Starting ${this.type} slave ${this.slaveId}...`);
+      this.log("info", `Starting ${this.type} slave ${this.slaveId}...`);
 
-      const workingDir = this.worktreePath || this.options.worktreePath || process.cwd();
+      const workingDir =
+        this.worktreePath || this.options.worktreePath || process.cwd();
 
       // Build the task prompt
       const taskPrompt = this.buildTaskPrompt();
 
       // Rate limit the API call
       await apiLimiter.acquire();
-      let output = '';
+      let output = "";
       try {
-        this.log('info', `Calling model for ${this.type} task`);
+        this.log("info", `Calling model for ${this.type} task`);
         const q = query({
           prompt: taskPrompt,
           options: {
             systemPrompt: fullSystemPrompt,
             cwd: resolve(workingDir),
-            env: sdkEnv,
+            env: {
+              ANTHROPIC_API_KEY: config.provider?.apiKey,
+              ANTHROPIC_BASE_URL: config.provider?.baseUrl,
+            },
             ...(slaveModel ? { model: slaveModel } : {}),
-            permissionMode: 'bypassPermissions',
+            permissionMode: "bypassPermissions",
             allowDangerouslySkipPermissions: true,
-            maxTurns: this.type === 'inspector' ? 10 : 20,
+            maxTurns: this.type === "inspector" ? 10 : 20,
           },
         });
 
         for await (const message of q) {
-          if (message.type === 'result') {
-            if (message.subtype === 'success') {
+          if (message.type === "result") {
+            if (message.subtype === "success") {
               output = message.result;
             } else {
-              const errMsg = (message as any).errors?.join('; ') || 'Unknown error';
-              this.log('error', `Slave ${this.slaveId} error: ${errMsg}`);
+              const errMsg =
+                (message as any).errors?.join("; ") || "Unknown error";
+              this.log("error", `Slave ${this.slaveId} error: ${errMsg}`);
               output = JSON.stringify({
-                status: 'failed',
-                summary: (message as any).errors?.join('; ') || 'Unknown error',
+                status: "failed",
+                summary: (message as any).errors?.join("; ") || "Unknown error",
                 filesChanged: [],
               });
             }
@@ -253,26 +266,26 @@ export class SlaveLauncher {
         apiLimiter.release();
       }
 
-      this.log('debug', `Model returned ${output.length} chars`);
-      this.log('info', `${this.type} slave ${this.slaveId} completed`);
+      this.log("debug", `Model returned ${output.length} chars`);
+      this.log("info", `${this.type} slave ${this.slaveId} completed`);
 
       // Process result based on type
-      if (this.type === 'reviewer') {
-        this.log('debug', 'Parsing review result');
+      if (this.type === "reviewer") {
+        this.log("debug", "Parsing review result");
         return this.parseReviewResult(output);
       } else {
-        this.log('debug', 'Parsing task result');
+        this.log("debug", "Parsing task result");
         const result = await this.parseTaskResult(output);
-        if (this.type === 'worker' && result.status === 'completed') {
+        if (this.type === "worker" && result.status === "completed") {
           this.shouldRemoveWorktreeOnCleanup = false;
         }
         return result;
       }
     } catch (error) {
-      this.log('error', `Slave ${this.slaveId} failed: ${error}`);
+      this.log("error", `Slave ${this.slaveId} failed: ${error}`);
       await addHistoryEntry({
         timestamp: new Date().toISOString(),
-        type: 'error',
+        type: "error",
         taskId: this.task.id,
         slaveId: this.slaveId,
         summary: `Slave execution failed: ${error}`,
@@ -289,7 +302,7 @@ export class SlaveLauncher {
     let context = `## Main Mission\n${mission}\n\n`;
 
     if (recentDecisions.length > 0) {
-      context += `## Recent Decisions\n${recentDecisions.map(d => `- ${d}`).join('\n')}\n\n`;
+      context += `## Recent Decisions\n${recentDecisions.map((d) => `- ${d}`).join("\n")}\n\n`;
     }
 
     context += `## Current Task\n**Task ID:** ${this.task.id}\n**Type:** ${this.task.type}\n**Priority:** ${this.task.priority}\n\n**Description:**\n${this.task.description}\n\n`;
@@ -310,9 +323,9 @@ export class SlaveLauncher {
   }
 
   private buildTaskPrompt(): string {
-    if (this.type === 'inspector') {
+    if (this.type === "inspector") {
       return `Please scan the codebase and identify issues or improvements. Output your findings as a JSON array of tasks.`;
-    } else if (this.type === 'reviewer') {
+    } else if (this.type === "reviewer") {
       return `Please review the code changes and provide your assessment in the specified JSON format.`;
     } else {
       return `Please complete the assigned task. When done, provide a summary of what was done.`;
@@ -327,10 +340,10 @@ export class SlaveLauncher {
         const parsed = JSON.parse(jsonMatch[0]);
         return {
           taskId: this.task.id,
-          status: parsed.status || 'completed',
-          worktree: this.worktreePath || '',
-          branch: this.branch || '',
-          diff: '',
+          status: parsed.status || "completed",
+          worktree: this.worktreePath || "",
+          branch: this.branch || "",
+          diff: "",
           summary: parsed.summary || output,
           filesChanged: parsed.filesChanged || [],
         };
@@ -340,21 +353,25 @@ export class SlaveLauncher {
     }
 
     // Get actual diff from git for worker tasks
-    let diff = '';
+    let diff = "";
     let filesChanged: string[] = [];
     if (this.worktreePath && this.branch) {
-      this.log('debug', `Collecting diff for ${this.branch}`);
-      const baseBranch = this.options.baseBranch || 'develop';
+      this.log("debug", `Collecting diff for ${this.branch}`);
+      const baseBranch = this.options.baseBranch || "develop";
       diff = await getDiff(this.branch, baseBranch, this.worktreePath);
-      filesChanged = await getChangedFiles(this.branch, baseBranch, this.worktreePath);
-      this.log('debug', `Collected diff for ${filesChanged.length} file(s)`);
+      filesChanged = await getChangedFiles(
+        this.branch,
+        baseBranch,
+        this.worktreePath,
+      );
+      this.log("debug", `Collected diff for ${filesChanged.length} file(s)`);
     }
 
     return {
       taskId: this.task.id,
-      status: 'completed',
-      worktree: this.worktreePath || '',
-      branch: this.branch || '',
+      status: "completed",
+      worktree: this.worktreePath || "",
+      branch: this.branch || "",
       diff,
       summary: output.slice(-1000),
       filesChanged,
@@ -368,9 +385,9 @@ export class SlaveLauncher {
         const parsed = JSON.parse(jsonMatch[0]);
         return {
           taskId: this.task.id,
-          verdict: parsed.verdict || 'request_changes',
+          verdict: parsed.verdict || "request_changes",
           confidence: parsed.confidence || 0.5,
-          summary: parsed.summary || '',
+          summary: parsed.summary || "",
           issues: parsed.issues || [],
           suggestions: parsed.suggestions || [],
         };
@@ -382,58 +399,62 @@ export class SlaveLauncher {
     // Default review result
     return {
       taskId: this.task.id,
-      verdict: 'request_changes',
+      verdict: "request_changes",
       confidence: 0.3,
-      summary: 'Could not parse review output',
-      issues: ['Failed to parse structured review output'],
+      summary: "Could not parse review output",
+      issues: ["Failed to parse structured review output"],
       suggestions: [],
     };
   }
 
   private async cleanup(): Promise<void> {
     if (this.shouldRemoveWorktreeOnCleanup && this.worktreePath) {
-      this.log('info', `Cleaning up worktree: ${this.worktreePath}`);
+      this.log("info", `Cleaning up worktree: ${this.worktreePath}`);
       await removeWorktree(this.worktreePath);
       this.worktreePath = null;
     }
 
     await updateSlave(this.slaveId, {
-      status: 'idle',
+      status: "idle",
       currentTask: undefined,
     });
   }
 
   async cancel(): Promise<void> {
-    this.log('info', `${this.type} slave ${this.slaveId} cancelled`);
+    this.log("info", `${this.type} slave ${this.slaveId} cancelled`);
     this.shouldRemoveWorktreeOnCleanup = true;
     await this.cleanup();
   }
 
   private async generateWorktreeTitle(
-    env: Record<string, string | undefined>,
-    config: Pick<Config, 'models'>
+    config: Pick<Config, "models">,
   ): Promise<string> {
-    if (!env.ANTHROPIC_API_KEY) {
+    if (!config.models.lite) {
       return fallbackTitleFromTask(this.task);
     }
 
     const prompt = [
-      'Generate a short semantic title for a git worktree based on this task.',
-      'Return ONLY a kebab-case slug, 3-8 words, lowercase, letters/numbers/hyphen only.',
+      "Generate a short semantic title for a git worktree based on this task.",
+      "Return ONLY a kebab-case slug, 3-8 words, lowercase, letters/numbers/hyphen only.",
       `Task description: ${this.task.description}`,
-      this.task.context ? `Task context: ${this.task.context}` : '',
-    ].filter(Boolean).join('\n');
+      this.task.context ? `Task context: ${this.task.context}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
 
     await apiLimiter.acquire();
     try {
       const queryOptions: any = {
         cwd: resolve(process.cwd()),
-        env,
-        permissionMode: 'bypassPermissions',
+        env: {
+          ANTHROPIC_API_KEY: settings.provider.get().apiKey,
+          ANTHROPIC_BASE_URL: settings.provider.get().baseUrl,
+        },
+        permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
         maxTurns: 1,
       };
-      const titleModel = getConfiguredModel(config, 'taskTitle');
+      const titleModel = getConfiguredModel(config, "taskTitle");
       if (titleModel) {
         queryOptions.model = titleModel;
       }
@@ -443,14 +464,14 @@ export class SlaveLauncher {
         options: queryOptions,
       });
 
-      let output = '';
+      let output = "";
       for await (const message of q) {
-        if (message.type === 'result' && message.subtype === 'success') {
+        if (message.type === "result" && message.subtype === "success") {
           output = message.result;
         }
       }
 
-      const slug = sanitizeModelTitle(output.trim().split('\n')[0] || '');
+      const slug = sanitizeModelTitle(output.trim().split("\n")[0] || "");
       return slug || fallbackTitleFromTask(this.task);
     } catch {
       return fallbackTitleFromTask(this.task);
@@ -461,13 +482,16 @@ export class SlaveLauncher {
 }
 
 // Convenience functions
-export async function runInspector(mission: string, recentDecisions: string[]): Promise<Task[]> {
+export async function runInspector(
+  mission: string,
+  recentDecisions: string[],
+): Promise<Task[]> {
   const inspectorTask: Task = {
-    id: 'inspection',
-    type: 'other',
-    status: 'running',
+    id: "inspection",
+    type: "other",
+    status: "running",
     priority: 1,
-    description: 'Scan the codebase for issues and improvements',
+    description: "Scan the codebase for issues and improvements",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     attemptCount: 0,
@@ -476,7 +500,7 @@ export async function runInspector(mission: string, recentDecisions: string[]): 
   };
 
   const launcher = new SlaveLauncher({
-    type: 'inspector',
+    type: "inspector",
     task: inspectorTask,
     mission,
     recentDecisions,
@@ -486,16 +510,16 @@ export async function runInspector(mission: string, recentDecisions: string[]): 
   const result = await launcher.execute();
 
   // Parse tasks from inspector output
-  if (result && 'summary' in result) {
+  if (result && "summary" in result) {
     try {
       const parsed = JSON.parse(result.summary);
       if (Array.isArray(parsed.tasks)) {
         return parsed.tasks.map((t: Partial<Task>) => ({
           id: generateTaskId(),
-          type: t.type || 'other',
-          status: 'pending' as const,
+          type: t.type || "other",
+          status: "pending" as const,
           priority: t.priority || 3,
-          description: t.description || '',
+          description: t.description || "",
           context: t.context,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
@@ -513,10 +537,10 @@ export async function runInspector(mission: string, recentDecisions: string[]): 
           if (Array.isArray(tasksJson.tasks)) {
             return tasksJson.tasks.map((t: Partial<Task>) => ({
               id: generateTaskId(),
-              type: t.type || 'other',
-              status: 'pending' as const,
+              type: t.type || "other",
+              status: "pending" as const,
               priority: t.priority || 3,
-              description: t.description || '',
+              description: t.description || "",
               context: t.context,
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
@@ -540,10 +564,10 @@ export async function runWorker(
   mission: string,
   recentDecisions: string[],
   additionalContext: string,
-  baseBranch: string
+  baseBranch: string,
 ): Promise<TaskResult | null> {
   const launcher = new SlaveLauncher({
-    type: 'worker',
+    type: "worker",
     task,
     mission,
     recentDecisions,
@@ -559,10 +583,10 @@ export async function runReviewer(
   task: Task,
   mission: string,
   recentDecisions: string[],
-  diff: string
+  diff: string,
 ): Promise<ReviewResult | null> {
   const launcher = new SlaveLauncher({
-    type: 'reviewer',
+    type: "reviewer",
     task,
     mission,
     recentDecisions,

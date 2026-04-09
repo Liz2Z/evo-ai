@@ -29,6 +29,9 @@ const baseConfig: Config = {
     max: 'opus',
   },
   provider: {},
+  master: {
+    runtimeMode: 'hybrid',
+  },
 };
 
 beforeAll(async () => {

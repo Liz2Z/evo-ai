@@ -99,7 +99,20 @@ export function useMasterState(emitter: EventEmitter | null): MasterStateData & 
     const onMasterState = (event: MasterStateEvent) => {
       setPhase(event.phase);
       setLastHeartbeat(event.lastHeartbeat);
-      setMasterState(prev => prev ? { ...prev, currentPhase: event.phase, mission: event.mission, lastHeartbeat: event.lastHeartbeat } : prev);
+      setMasterState({
+        mission: event.mission,
+        currentPhase: event.phase,
+        lastHeartbeat: event.lastHeartbeat,
+        lastInspection: event.lastInspection,
+        activeSince: event.activeSince,
+        pendingQuestions: event.pendingQuestions,
+        runtimeMode: event.runtimeMode,
+        lastDecisionAt: event.lastDecisionAt,
+        turnStatus: event.turnStatus,
+        runtimeSessionSummary: event.runtimeSessionSummary,
+        skippedWakeups: event.skippedWakeups,
+        lastSkippedTriggerReason: event.lastSkippedTriggerReason,
+      });
     };
 
     const onLogMessage = (event: LogMessageEvent) => {

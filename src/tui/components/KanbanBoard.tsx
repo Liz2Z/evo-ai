@@ -114,7 +114,11 @@ export function KanbanBoard({ emitter, master, maxConcurrency, onQuit }: KanbanB
   const fixedHeight = 3 + (lastMessage ? 1 : 0) + 3; // status + message + input
   const mainHeight = Math.max(8, termRows - fixedHeight);
 
-  const pendingQuestions = masterState?.pendingQuestions?.length || 0;
+  const unansweredQuestions = (masterState?.pendingQuestions || []).filter(question => !question.answered);
+  const pendingQuestions = unansweredQuestions.length;
+  const primaryQuestion = unansweredQuestions[0];
+  const questionPanelHeight = primaryQuestion ? 4 : 0;
+  const adjustedMainHeight = Math.max(8, mainHeight - questionPanelHeight);
 
   return (
     <Box flexDirection="column">
@@ -127,8 +131,23 @@ export function KanbanBoard({ emitter, master, maxConcurrency, onQuit }: KanbanB
         pendingQuestions={pendingQuestions}
       />
 
+      {primaryQuestion && (
+        <Box borderStyle="single" borderColor="red" paddingX={1}>
+          <Text bold color="red">PENDING QUESTION</Text>
+          <Text> </Text>
+          <Text>{primaryQuestion.question}</Text>
+          {primaryQuestion.options.length > 0 && (
+            <Text color="yellow"> | Options: {primaryQuestion.options.join(' / ')}</Text>
+          )}
+          <Text color="gray"> | Answer: /answer {primaryQuestion.id} &lt;你的回复&gt;</Text>
+          {unansweredQuestions.length > 1 && (
+            <Text color="gray"> | +{unansweredQuestions.length - 1} more</Text>
+          )}
+        </Box>
+      )}
+
       {/* Main content */}
-      <Box flexDirection="row" height={mainHeight}>
+      <Box flexDirection="row" height={adjustedMainHeight}>
         {/* Left panel - Worktree list */}
         <Box
           flexDirection="column"
@@ -142,7 +161,7 @@ export function KanbanBoard({ emitter, master, maxConcurrency, onQuit }: KanbanB
             tasks={tasks}
             selectedTaskId={selectedTaskId}
             onSelect={selectTask}
-            maxHeight={mainHeight - 3}
+            maxHeight={adjustedMainHeight - 3}
           />
         </Box>
 
@@ -160,7 +179,7 @@ export function KanbanBoard({ emitter, master, maxConcurrency, onQuit }: KanbanB
             logs={logEntries}
             liveLogs={liveLogEntries}
             showLogs={showLogs}
-            maxHeight={mainHeight - 2}
+            maxHeight={adjustedMainHeight - 2}
           />
         </Box>
       </Box>

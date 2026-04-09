@@ -1,30 +1,57 @@
 // Auto-generated
 import { EventEmitter } from 'events';
-import { existsSync, unlinkSync, writeFileSync, readFileSync } from 'fs';
-import type { Task, Config, MasterState, ReviewResult, TaskResult } from '../types';
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
+import type { Config, MasterState, Question, ReviewResult, Task, TaskResult } from '../types';
+import type { HeartbeatTickEvent, MasterStateEvent, TaskStatusChangeEvent } from '../types/events';
 import {
-  loadTasks, saveTasks, updateTask, addTask,
-  loadMasterState, saveMasterState,
-  loadSlaves, saveSlaves,
-  addHistoryEntry, loadHistory,
-  addFailedTask, loadFailedTasks
+  addFailedTask,
+  addHistoryEntry,
+  addQuestion,
+  addTask,
+  loadFailedTasks,
+  loadHistory,
+  loadMasterState,
+  loadSlaves,
+  loadTasks,
+  saveMasterState,
+  saveSlaves,
+  saveTasks,
+  updateTask,
 } from '../utils/storage';
-import { mergeBranch, deleteBranch, removeWorktree, getDiff, listWorktrees } from '../utils/git';
-import { runInspector, runWorker, runReviewer } from '../slave/launcher';
-import type { HeartbeatTickEvent, TaskStatusChangeEvent, MasterStateEvent } from '../types/events';
+import { deleteBranch, getDiff, listWorktrees, mergeBranch, removeWorktree } from '../utils/git';
+import { runInspector, runReviewer, runWorker } from '../slave/launcher';
+import {
+  createMasterRuntime,
+  type CleanupArtifactsResult,
+  type MasterRuntime,
+  type MasterRuntimeContext,
+  type MasterTools,
+  type MergeTaskResult,
+  type ReviewerAssignmentResult,
+  type WorkerAssignmentResult,
+} from './runtime';
 import { getControlFilePath, getHealthFilePath } from '../runtime/paths';
 
-export class Master extends EventEmitter {
-  private config: Config;
-  private state: MasterState;
-  private activeSlaves: number = 0;
-  private isRunning: boolean = false;
-  private isPaused: boolean = false;
-  private tickPromise: Promise<void> | null = null;
+interface MasterOptions {
+  runtimeFactory?: (config: Config, state: MasterState) => MasterRuntime;
+}
 
-  constructor(config: Config, mission: string) {
+export class Master extends EventEmitter {
+  private readonly config: Config;
+  private readonly options?: MasterOptions;
+  private state: MasterState;
+  private activeSlaves = 0;
+  private isRunning = false;
+  private isPaused = false;
+  private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+  private currentTurnPromise: Promise<void> | null = null;
+  private readonly tools: MasterTools;
+  private runtime: MasterRuntime;
+
+  constructor(config: Config, mission: string, options?: MasterOptions) {
     super();
     this.config = config;
+    this.options = options;
     this.state = {
       mission,
       currentPhase: 'initializing',
@@ -32,514 +59,98 @@ export class Master extends EventEmitter {
       lastInspection: '',
       activeSince: new Date().toISOString(),
       pendingQuestions: [],
+      runtimeMode: config.master.runtimeMode,
+      lastDecisionAt: '',
+      turnStatus: 'idle',
+      skippedWakeups: 0,
     };
+    this.runtime = this.createRuntime(this.state);
+    this.tools = this.createTools();
   }
 
   async start(): Promise<void> {
     this.isRunning = true;
 
-    // Load saved state
     const savedState = await loadMasterState();
     this.state = {
+      ...this.state,
       ...savedState,
       mission: this.state.mission || savedState.mission,
+      runtimeMode: this.config.master.runtimeMode,
+      turnStatus: savedState.turnStatus || 'idle',
+      skippedWakeups: savedState.skippedWakeups || 0,
     };
-    this.isPaused = savedState.currentPhase === 'paused';
+    this.isPaused = this.state.turnStatus === 'paused' || this.state.currentPhase === 'paused';
+
+    this.runtime = this.createRuntime(this.state);
 
     console.log(`Master starting with mission: ${this.state.mission}`);
     console.log(`Heartbeat interval: ${this.config.heartbeatInterval}ms`);
     console.log(`Max concurrency: ${this.config.maxConcurrency}`);
+    console.log(`Master runtime mode: ${this.config.master.runtimeMode}`);
 
-    // Recover stale runtime state from previous unclean exit
     await this.recoverStaleRuntimeState();
-
-    // Clean up stale worktrees from previous crashes
     await this.cleanupStaleWorktrees();
+    await this.refreshActiveSlaves();
+
+    this.clearControlFile();
+    this.state.currentPhase = this.isPaused ? 'paused' : 'idle';
+    this.state.turnStatus = this.isPaused ? 'paused' : 'idle';
+    await saveMasterState(this.state);
 
     await addHistoryEntry({
       timestamp: new Date().toISOString(),
       type: 'decision',
-      summary: `Master started with mission: ${this.state.mission}`,
+      summary: `Master started with mission: ${this.state.mission} (mode=${this.config.master.runtimeMode})`,
     });
 
-    // Clear any stale control file
-    this.clearControlFile();
-
-    await saveMasterState(this.state);
-
-    // Run one tick immediately, then continue heartbeat loop
-    this.tickPromise = this.tick().finally(() => {
-      this.tickPromise = null;
-      this.scheduleNextTick();
-    });
+    await this.runtime.init(await this.buildRuntimeContext('startup'), this.tools);
+    this.emitMasterState();
+    this.writeHealthFile();
+    this.scheduleHeartbeat();
+    void this.requestTurn('startup');
   }
 
   async stop(): Promise<void> {
     this.isRunning = false;
-    await saveMasterState(this.state);
+    this.state.currentPhase = 'stopped';
+    this.state.turnStatus = 'idle';
+
+    if (this.heartbeatTimer) {
+      clearTimeout(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+
+    try {
+      await this.runtime.dispose();
+    } finally {
+      await saveMasterState(this.state);
+    }
+
     console.log('Master stopped');
   }
 
   pause(): void {
     this.isPaused = true;
     this.state.currentPhase = 'paused';
+    this.state.turnStatus = 'paused';
     this.writeHealthFile();
+    void saveMasterState(this.state);
     this.emitMasterState();
     console.log('Master paused');
   }
 
   resume(): void {
     this.isPaused = false;
-    if (this.state.currentPhase === 'paused') {
-      this.state.currentPhase = 'idle';
-    }
+    this.state.currentPhase = 'idle';
+    this.state.turnStatus = 'idle';
     this.writeHealthFile();
+    void saveMasterState(this.state);
     this.emitMasterState();
     console.log('Master resumed');
-    if (!this.tickPromise) {
-      this.scheduleNextTick();
-    }
+    void this.requestTurn('resume');
   }
 
-  private scheduleNextTick(): void {
-    if (!this.isRunning) return;
-
-    setTimeout(() => {
-      this.tickPromise = this.tick().finally(() => {
-        this.tickPromise = null;
-        this.scheduleNextTick();
-      });
-    }, this.config.heartbeatInterval);
-  }
-
-  private async tick(): Promise<void> {
-    // Check for control commands from CLI
-    this.checkControlFile();
-
-    if (this.isPaused) {
-      // Keep health signal fresh while paused so CLI resume can still reach master
-      this.writeHealthFile();
-      return;
-    }
-
-    this.state.lastHeartbeat = new Date().toISOString();
-
-    // Update health file for CLI health check
-    this.writeHealthFile();
-
-    const tasks = await loadTasks();
-    const pendingCount = tasks.filter(t => t.status === 'pending').length;
-
-    this.emit('heartbeat', {
-      timestamp: this.state.lastHeartbeat,
-      phase: this.state.currentPhase,
-      activeSlaves: this.activeSlaves,
-      pendingCount,
-    } satisfies HeartbeatTickEvent);
-
-    console.log(`\n[${new Date().toISOString()}] Heartbeat tick`);
-
-    try {
-      // 1. Check slave status
-      await this.checkSlaves();
-
-      // 2. Check if we should run inspector
-      if (await this.shouldRunInspector()) {
-        await this.runInspection();
-      }
-
-      // 3. Dispatch pending tasks to workers
-      await this.dispatchWorkers();
-
-      // 4. Process completed tasks (assign reviewers)
-      await this.processCompletedTasks();
-
-      // 5. Process review results
-      await this.processReviewResults();
-
-      // 6. Merge approved tasks
-      await this.mergeApprovedTasks();
-
-      // 7. Handle failed tasks
-      await this.handleFailedTasks();
-
-      // 8. Save state
-      await saveMasterState(this.state);
-
-    } catch (error) {
-      await addHistoryEntry({
-        timestamp: new Date().toISOString(),
-        type: 'error',
-        summary: `Tick error: ${error}`,
-      });
-    }
-  }
-
-  private async checkSlaves(): Promise<void> {
-    const slaves = await loadSlaves();
-    const busySlaves = slaves.filter(s => s.status === 'busy');
-    
-    this.activeSlaves = busySlaves.length;
-    console.log(`Active slaves: ${this.activeSlaves}/${this.config.maxConcurrency}`);
-  }
-
-  private async shouldRunInspector(): Promise<boolean> {
-    const tasks = await loadTasks();
-    const pendingOrRunning = tasks.filter(t => 
-      ['pending', 'assigned', 'running', 'reviewing'].includes(t.status)
-    );
-
-    // Run inspector when no tasks are pending/running
-    if (pendingOrRunning.length > 0) {
-      return false;
-    }
-
-    // Check if we recently ran inspection
-    if (this.state.lastInspection) {
-      const lastInspectTime = new Date(this.state.lastInspection).getTime();
-      const minInterval = 5 * 60 * 1000; // 5 minutes minimum between inspections
-      if (Date.now() - lastInspectTime < minInterval) {
-        return false;
-      }
-    }
-
-    return true;
-  }
-
-  private async runInspection(): Promise<void> {
-    console.log('Running inspection...');
-    this.state.currentPhase = 'inspecting';
-
-    const recentDecisions = await this.getRecentDecisions();
-    
-    try {
-      const newTasks = await runInspector(this.state.mission, recentDecisions);
-      
-      for (const task of newTasks) {
-        await addTask(task);
-        await addHistoryEntry({
-          timestamp: new Date().toISOString(),
-          type: 'task_created',
-          taskId: task.id,
-          summary: `Task created: ${task.description.slice(0, 100)}`,
-        });
-      }
-
-      this.state.lastInspection = new Date().toISOString();
-      console.log(`Inspection complete. Found ${newTasks.length} new tasks.`);
-    } catch (error) {
-      console.error('Inspection failed:', error);
-    }
-  }
-
-  private async dispatchWorkers(): Promise<void> {
-    if (this.activeSlaves >= this.config.maxConcurrency) {
-      return;
-    }
-
-    const tasks = await loadTasks();
-    const pendingTasks = tasks.filter(t => t.status === 'pending');
-    
-    const availableSlots = this.config.maxConcurrency - this.activeSlaves;
-    const tasksToAssign = pendingTasks
-      .sort((a, b) => b.priority - a.priority)
-      .slice(0, availableSlots);
-
-    for (const task of tasksToAssign) {
-      if (this.activeSlaves >= this.config.maxConcurrency) break;
-      
-      await this.assignWorker(task);
-    }
-  }
-
-  private async assignWorker(task: Task): Promise<void> {
-    console.log(`Assigning worker to task ${task.id}`);
-
-    await updateTask(task.id, { status: 'assigned' });
-    this.emit('task:status_change', {
-      taskId: task.id,
-      fromStatus: task.status,
-      toStatus: 'assigned',
-      task,
-    } satisfies TaskStatusChangeEvent);
-    this.activeSlaves++;
-
-    const recentDecisions = await this.getRecentDecisions();
-    const baseBranch = this.config.developBranch;
-
-    // Run worker in background
-    runWorker(task, this.state.mission, recentDecisions, '', baseBranch)
-      .then(async (result) => {
-        if (result) {
-          await this.handleWorkerResult(task, result);
-        } else {
-          await updateTask(task.id, { status: 'failed' });
-        }
-        this.activeSlaves--;
-      })
-      .catch(async (error) => {
-        console.error(`Worker failed for task ${task.id}:`, error);
-        await updateTask(task.id, { status: 'failed' });
-        this.activeSlaves--;
-      });
-  }
-
-  private async handleWorkerResult(task: Task, result: TaskResult): Promise<void> {
-    if (result.status === 'completed') {
-      const newStatus = 'reviewing' as const;
-      await updateTask(task.id, {
-        status: newStatus,
-        worktree: result.worktree,
-        branch: result.branch,
-      });
-      this.emit('task:status_change', {
-        taskId: task.id,
-        fromStatus: 'assigned',
-        toStatus: newStatus,
-        task: { ...task, status: newStatus, worktree: result.worktree, branch: result.branch },
-      } satisfies TaskStatusChangeEvent);
-      
-      await addHistoryEntry({
-        timestamp: new Date().toISOString(),
-        type: 'task_completed',
-        taskId: task.id,
-        summary: `Task completed, pending review. ${result.summary.slice(0, 100)}`,
-        details: { filesChanged: result.filesChanged },
-      });
-    } else {
-      const newStatus = 'failed' as const;
-      await updateTask(task.id, { status: newStatus });
-      this.emit('task:status_change', {
-        taskId: task.id,
-        fromStatus: 'assigned',
-        toStatus: newStatus,
-        task: { ...task, status: newStatus },
-      } satisfies TaskStatusChangeEvent);
-    }
-  }
-
-  private async processCompletedTasks(): Promise<void> {
-    const tasks = await loadTasks();
-    const tasksNeedingReview = tasks.filter(t => t.status === 'reviewing');
-
-    for (const task of tasksNeedingReview) {
-      await this.assignReviewer(task);
-    }
-  }
-
-  private async assignReviewer(task: Task): Promise<void> {
-    if (!task.worktree || !task.branch) {
-      console.log(`Task ${task.id} missing worktree info, skipping review`);
-      await updateTask(task.id, { status: 'approved' }); // Auto-approve if no worktree
-      return;
-    }
-
-    console.log(`Assigning reviewer to task ${task.id}`);
-    
-    const baseBranch = this.config.developBranch;
-    const diff = await getDiff(task.branch, baseBranch, task.worktree);
-    
-    if (!diff) {
-      console.log(`No changes to review for task ${task.id}`);
-      await this.finalizeTaskWorktree(task, 'approved');
-      return;
-    }
-
-    const recentDecisions = await this.getRecentDecisions();
-    
-    try {
-      const result = await runReviewer(task, this.state.mission, recentDecisions, diff);
-      
-      if (result) {
-        await this.handleReviewResult(task, result);
-      }
-    } catch (error) {
-      console.error(`Review failed for task ${task.id}:`, error);
-    }
-  }
-
-  private async handleReviewResult(task: Task, result: ReviewResult): Promise<void> {
-    await addHistoryEntry({
-      timestamp: new Date().toISOString(),
-      type: 'review',
-      taskId: task.id,
-      summary: `Review: ${result.verdict} (${result.confidence}) - ${result.summary}`,
-      details: { issues: result.issues, suggestions: result.suggestions },
-    });
-
-    const reviewEntry = {
-      attempt: task.attemptCount + 1,
-      slaveId: 'reviewer',
-      review: result,
-      timestamp: new Date().toISOString(),
-    };
-
-    if (result.verdict === 'approve') {
-      const newStatus = 'approved' as const;
-      await updateTask(task.id, {
-        status: newStatus,
-        attemptCount: task.attemptCount + 1,
-        reviewHistory: [...task.reviewHistory, reviewEntry],
-      });
-      await this.finalizeTaskWorktree(task, newStatus);
-      this.emit('task:status_change', {
-        taskId: task.id,
-        fromStatus: 'reviewing',
-        toStatus: newStatus,
-        task,
-      } satisfies TaskStatusChangeEvent);
-    } else if (result.verdict === 'reject' || task.attemptCount + 1 >= task.maxAttempts) {
-      const newStatus = 'rejected' as const;
-      await updateTask(task.id, {
-        status: newStatus,
-        attemptCount: task.attemptCount + 1,
-        reviewHistory: [...task.reviewHistory, reviewEntry],
-      });
-      await this.finalizeTaskWorktree(task, newStatus);
-      this.emit('task:status_change', {
-        taskId: task.id,
-        fromStatus: 'reviewing',
-        toStatus: newStatus,
-        task,
-      } satisfies TaskStatusChangeEvent);
-    } else {
-      // Request changes - reassign to new worker
-      const newAttemptCount = task.attemptCount + 1;
-      const additionalContext = this.buildRetryContext(result);
-
-      await updateTask(task.id, {
-        status: 'pending',
-        attemptCount: newAttemptCount,
-        context: task.context ? `${task.context}\n\n${additionalContext}` : additionalContext,
-        reviewHistory: [...task.reviewHistory, reviewEntry],
-      });
-      this.emit('task:status_change', {
-        taskId: task.id,
-        fromStatus: 'reviewing',
-        toStatus: 'pending',
-        task,
-      } satisfies TaskStatusChangeEvent);
-    }
-  }
-
-  private buildRetryContext(result: ReviewResult): string {
-    let context = '## Previous Review Feedback\n\n';
-    
-    if (result.issues.length > 0) {
-      context += '**Issues to fix:**\n' + result.issues.map(i => `- ${i}`).join('\n') + '\n\n';
-    }
-    
-    if (result.suggestions.length > 0) {
-      context += '**Suggestions:**\n' + result.suggestions.map(s => `- ${s}`).join('\n') + '\n\n';
-    }
-    
-    context += `**Summary:** ${result.summary}\n`;
-    
-    return context;
-  }
-
-  private async processReviewResults(): Promise<void> {
-    // This is handled in handleReviewResult
-  }
-
-  private async mergeApprovedTasks(): Promise<void> {
-    const tasks = await loadTasks();
-    const approvedTasks = tasks.filter(t => t.status === 'approved');
-
-    for (const task of approvedTasks) {
-      if (!task.branch) continue;
-
-      console.log(`Merging task ${task.id}`);
-      
-      const baseBranch = this.config.developBranch;
-      const result = await mergeBranch(task.branch, baseBranch);
-
-      if (result.success) {
-        await addHistoryEntry({
-          timestamp: new Date().toISOString(),
-          type: 'merge',
-          taskId: task.id,
-          summary: `Merged ${task.branch} into ${baseBranch}`,
-        });
-
-        // Clean up
-        await deleteBranch(task.branch);
-
-        // Mark as completed
-        await updateTask(task.id, {
-          status: 'completed',
-          worktree: undefined,
-          branch: undefined,
-        });
-        this.emit('task:status_change', {
-          taskId: task.id,
-          fromStatus: 'approved',
-          toStatus: 'completed',
-          task,
-        } satisfies TaskStatusChangeEvent);
-      } else {
-        await addHistoryEntry({
-          timestamp: new Date().toISOString(),
-          type: 'error',
-          taskId: task.id,
-          summary: `Merge failed: ${result.message}`,
-        });
-        await updateTask(task.id, { status: 'failed' });
-        this.emit('task:status_change', {
-          taskId: task.id,
-          fromStatus: 'approved',
-          toStatus: 'failed',
-          task,
-        } satisfies TaskStatusChangeEvent);
-      }
-    }
-  }
-
-  private async handleFailedTasks(): Promise<void> {
-    const tasks = await loadTasks();
-    const failedTasks = tasks.filter(t => t.status === 'failed' || t.status === 'rejected');
-
-    for (const task of failedTasks) {
-      // Move to failed tasks file
-      await addFailedTask(task);
-      await addHistoryEntry({
-        timestamp: new Date().toISOString(),
-        type: 'task_failed',
-        taskId: task.id,
-        summary: `Task failed after ${task.attemptCount} attempts: ${task.description.slice(0, 100)}`,
-      });
-
-      // Remove from active tasks
-      const allTasks = await loadTasks();
-      const remainingTasks = allTasks.filter(t => t.id !== task.id);
-      await saveTasks(remainingTasks);
-    }
-  }
-
-  private async finalizeTaskWorktree(
-    task: Task,
-    status: Extract<Task['status'], 'approved' | 'failed' | 'rejected'>
-  ): Promise<void> {
-    if (task.worktree) {
-      await removeWorktree(task.worktree);
-    }
-
-    await updateTask(task.id, {
-      status,
-      worktree: undefined,
-    });
-  }
-
-  private async getRecentDecisions(): Promise<string[]> {
-    const history = await loadHistory();
-    const decisions = history
-      .filter(h => h.type === 'decision')
-      .slice(-5)
-      .map(h => h.summary);
-    return decisions;
-  }
-
-  // Public methods for external control
   async addTaskManually(description: string, type: Task['type'] = 'other', priority = 3): Promise<Task> {
     const task: Task = {
       id: `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
@@ -555,6 +166,12 @@ export class Master extends EventEmitter {
     };
 
     await addTask(task);
+    await addHistoryEntry({
+      timestamp: new Date().toISOString(),
+      type: 'task_created',
+      taskId: task.id,
+      summary: `Task created manually: ${description.slice(0, 100)}`,
+    });
     return task;
   }
 
@@ -578,15 +195,650 @@ export class Master extends EventEmitter {
     });
   }
 
+  private createRuntime(state: MasterState): MasterRuntime {
+    if (this.options?.runtimeFactory) {
+      return this.options.runtimeFactory(this.config, state);
+    }
+    return createMasterRuntime(this.config.master.runtimeMode, this.config, state);
+  }
+
+  private createTools(): MasterTools {
+    return {
+      get_master_snapshot: async () => {
+        await this.refreshActiveSlaves();
+        return {
+          mission: this.state.mission,
+          runtimeMode: this.state.runtimeMode,
+          currentPhase: this.state.currentPhase,
+          turnStatus: this.state.turnStatus,
+          activeSlaves: this.activeSlaves,
+          maxConcurrency: this.config.maxConcurrency,
+          pendingCount: (await loadTasks()).filter(task => task.status === 'pending').length,
+          pendingQuestions: this.state.pendingQuestions,
+          lastHeartbeat: this.state.lastHeartbeat,
+          lastDecisionAt: this.state.lastDecisionAt,
+          skippedWakeups: this.state.skippedWakeups,
+          lastSkippedTriggerReason: this.state.lastSkippedTriggerReason,
+          runtimeSessionSummary: this.state.runtimeSessionSummary,
+        };
+      },
+      list_tasks: async (input) => {
+        const tasks = await loadTasks();
+        if (!input?.status) return tasks;
+        const statuses = Array.isArray(input.status) ? input.status : [input.status];
+        return tasks.filter(task => statuses.includes(task.status));
+      },
+      list_slaves: async () => loadSlaves(),
+      get_task: async ({ taskId }) => {
+        const tasks = await loadTasks();
+        return tasks.find(task => task.id === taskId) || null;
+      },
+      get_recent_history: async (input) => {
+        const history = await loadHistory();
+        const limit = input?.limit || 20;
+        return history.slice(-limit);
+      },
+      get_task_diff: async ({ taskId, branch }) => {
+        let resolvedBranch = branch;
+        let cwd: string | undefined;
+        if (taskId) {
+          const tasks = await loadTasks();
+          const task = tasks.find(item => item.id === taskId);
+          if (!task?.branch) return '';
+          resolvedBranch = task.branch;
+          cwd = task.worktree;
+        }
+        if (!resolvedBranch) return '';
+        return getDiff(resolvedBranch, this.config.developBranch, cwd);
+      },
+      launch_inspector: async ({ reason }) => this.launchInspector(reason),
+      assign_worker: async ({ taskId, additionalContext }) => {
+        const task = await this.getTaskById(taskId);
+        if (!task) {
+          return { status: 'not_found', taskId, message: 'Task not found' } satisfies WorkerAssignmentResult;
+        }
+        return this.assignWorker(task, additionalContext);
+      },
+      assign_reviewer: async ({ taskId }) => {
+        const task = await this.getTaskById(taskId);
+        if (!task) {
+          return { status: 'not_found', taskId, message: 'Task not found' } satisfies ReviewerAssignmentResult;
+        }
+        return this.assignReviewer(task);
+      },
+      create_task: async ({ description, type = 'other', priority = 3, context }) => {
+        const task = await this.addTaskManually(description, type, priority);
+        if (context) {
+          const updated = await updateTask(task.id, { context });
+          return updated || task;
+        }
+        return task;
+      },
+      update_task: async ({ taskId, patch }) => updateTask(taskId, patch),
+      cancel_task: async ({ taskId }) => {
+        const cancelled = await this.cancelTask(taskId);
+        return { status: cancelled ? 'cancelled' : 'noop', taskId };
+      },
+      retry_task: async ({ taskId, additionalContext }) => {
+        const task = await this.getTaskById(taskId);
+        if (!task) {
+          return { status: 'not_found', taskId };
+        }
+        if (!['failed', 'rejected'].includes(task.status) || task.attemptCount >= task.maxAttempts) {
+          return { status: 'noop', taskId };
+        }
+        const context = additionalContext
+          ? (task.context ? `${task.context}\n\n${additionalContext}` : additionalContext)
+          : task.context;
+        await updateTask(task.id, { status: 'pending', context });
+        return { status: 'retried', taskId };
+      },
+      merge_task: async ({ taskId }) => {
+        const task = await this.getTaskById(taskId);
+        if (!task) {
+          return { status: 'not_found', taskId, message: 'Task not found' } satisfies MergeTaskResult;
+        }
+        return this.mergeTask(task);
+      },
+      cleanup_task_artifacts: async ({ taskId }) => {
+        const task = await this.getTaskById(taskId);
+        if (!task) {
+          return { taskId, removedBranch: false, removedWorktree: false } satisfies CleanupArtifactsResult;
+        }
+        return this.cleanupTaskArtifacts(task);
+      },
+      ask_human: async ({ question, options }) => {
+        const existing = this.state.pendingQuestions.find(
+          item => !item.answered && item.question.trim() === question.trim()
+        );
+        if (existing) {
+          return existing;
+        }
+        const created: Question = {
+          id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          question,
+          options: options || [],
+          createdAt: new Date().toISOString(),
+        };
+        await addQuestion(created);
+        this.state.pendingQuestions = [...this.state.pendingQuestions, created];
+        await saveMasterState(this.state);
+        return created;
+      },
+    };
+  }
+
+  private scheduleHeartbeat(): void {
+    if (!this.isRunning) return;
+    this.heartbeatTimer = setTimeout(() => {
+      void this.requestTurn('heartbeat');
+      this.scheduleHeartbeat();
+    }, this.config.heartbeatInterval);
+  }
+
+  private async requestTurn(reason: string): Promise<void> {
+    if (!this.isRunning) return;
+
+    if (this.runtime.onExternalEvent) {
+      await this.runtime.onExternalEvent({ reason, timestamp: new Date().toISOString() });
+    }
+
+    if (this.currentTurnPromise) {
+      this.state.skippedWakeups += 1;
+      this.state.lastSkippedTriggerReason = reason;
+      this.writeHealthFile();
+      await saveMasterState(this.state);
+      this.emitMasterState();
+      return;
+    }
+
+    this.currentTurnPromise = this.executeTurn(reason).finally(() => {
+      this.currentTurnPromise = null;
+    });
+    await this.currentTurnPromise;
+  }
+
+  private async executeTurn(reason: string): Promise<void> {
+    this.checkControlFile();
+
+    if (!this.isRunning) return;
+
+    await this.syncPersistedStateFields();
+
+    if (this.isPaused) {
+      this.state.currentPhase = 'paused';
+      this.state.turnStatus = 'paused';
+      this.writeHealthFile();
+      await saveMasterState(this.state);
+      this.emitMasterState();
+      return;
+    }
+
+    await this.refreshActiveSlaves();
+
+    this.state.lastHeartbeat = new Date().toISOString();
+    this.state.currentPhase = 'running';
+    this.state.turnStatus = 'running';
+    this.writeHealthFile();
+    this.emitMasterState();
+
+    const tasks = await loadTasks();
+    const pendingCount = tasks.filter(task => task.status === 'pending').length;
+    this.emit('heartbeat', {
+      timestamp: this.state.lastHeartbeat,
+      phase: this.state.currentPhase,
+      activeSlaves: this.activeSlaves,
+      pendingCount,
+    } satisfies HeartbeatTickEvent);
+
+    try {
+      const context = await this.buildRuntimeContext(reason);
+      const result = await this.runtime.runTurn(context, this.tools);
+
+      this.state.lastDecisionAt = new Date().toISOString();
+      if (result.sessionSummary !== undefined) {
+        this.state.runtimeSessionSummary = result.sessionSummary;
+      }
+
+      await this.handleFailedTasks();
+
+      await addHistoryEntry({
+        timestamp: this.state.lastDecisionAt,
+        type: 'decision',
+        summary: `Master turn completed (${this.state.runtimeMode}, trigger=${reason}) tools=[${result.toolCalls.join(', ') || 'none'}]`,
+        details: {
+          summary: result.summary,
+          unauthorizedToolCalls: result.unauthorizedToolCalls,
+        },
+      });
+
+      if (result.unauthorizedToolCalls.length > 0) {
+        await addHistoryEntry({
+          timestamp: new Date().toISOString(),
+          type: 'error',
+          summary: `Master attempted unauthorized tools: ${result.unauthorizedToolCalls.join(', ')}`,
+        });
+      }
+    } catch (error) {
+      await addHistoryEntry({
+        timestamp: new Date().toISOString(),
+        type: 'error',
+        summary: `Master turn failed: ${error}`,
+      });
+    } finally {
+      await this.refreshActiveSlaves();
+      this.state.currentPhase = 'idle';
+      this.state.turnStatus = 'idle';
+      this.writeHealthFile();
+      await saveMasterState(this.state);
+      this.emitMasterState();
+    }
+  }
+
+  private async buildRuntimeContext(triggerReason: string): Promise<MasterRuntimeContext> {
+    const [tasks, slaves, history] = await Promise.all([
+      loadTasks(),
+      loadSlaves(),
+      loadHistory(),
+    ]);
+
+    return {
+      triggerReason,
+      timestamp: new Date().toISOString(),
+      mission: this.state.mission,
+      config: this.config,
+      masterState: this.getState(),
+      tasks,
+      slaves,
+      recentHistory: history.slice(-20),
+    };
+  }
+
+  private async refreshActiveSlaves(): Promise<void> {
+    const slaves = await loadSlaves();
+    this.activeSlaves = slaves.filter(slave => slave.status === 'busy').length;
+  }
+
+  private async syncPersistedStateFields(): Promise<void> {
+    const persisted = await loadMasterState();
+    if (persisted.mission) {
+      this.state.mission = persisted.mission;
+    }
+    this.state.pendingQuestions = persisted.pendingQuestions || [];
+  }
+
+  private async getTaskById(taskId: string): Promise<Task | null> {
+    const tasks = await loadTasks();
+    return tasks.find(task => task.id === taskId) || null;
+  }
+
+  private async launchInspector(reason: string): Promise<{ status: 'started' | 'noop'; createdTaskIds: string[]; message: string }> {
+    await this.refreshActiveSlaves();
+    if (this.activeSlaves >= this.config.maxConcurrency) {
+      return { status: 'noop', createdTaskIds: [], message: 'No concurrency slot available for inspector' };
+    }
+
+    const slaves = await loadSlaves();
+    if (slaves.some(slave => slave.type === 'inspector' && slave.status === 'busy')) {
+      return { status: 'noop', createdTaskIds: [], message: 'Inspector already running' };
+    }
+
+    const recentDecisions = await this.getRecentDecisions();
+    this.activeSlaves++;
+
+    void runInspector(this.state.mission, recentDecisions)
+      .then(async (newTasks) => {
+        const createdTaskIds: string[] = [];
+        for (const task of newTasks) {
+          await addTask(task);
+          createdTaskIds.push(task.id);
+          await addHistoryEntry({
+            timestamp: new Date().toISOString(),
+            type: 'task_created',
+            taskId: task.id,
+            summary: `Inspector created task: ${task.description.slice(0, 100)}`,
+          });
+        }
+        this.state.lastInspection = new Date().toISOString();
+        this.activeSlaves = Math.max(0, this.activeSlaves - 1);
+        await saveMasterState(this.state);
+        await this.requestTurn(`inspector_completed:${reason}`);
+      })
+      .catch(async (error) => {
+        this.activeSlaves = Math.max(0, this.activeSlaves - 1);
+        await addHistoryEntry({
+          timestamp: new Date().toISOString(),
+          type: 'error',
+          summary: `Inspector failed: ${error}`,
+        });
+        await this.requestTurn('inspector_failed');
+      });
+
+    return { status: 'started', createdTaskIds: [], message: `Inspector launched (${reason})` };
+  }
+
+  private async assignWorker(task: Task, additionalContext = ''): Promise<WorkerAssignmentResult> {
+    const freshTask = await this.getTaskById(task.id);
+    if (!freshTask) {
+      return { status: 'not_found', taskId: task.id, message: 'Task not found' };
+    }
+    if (freshTask.status !== 'pending') {
+      return { status: 'noop', taskId: task.id, message: `Task is ${freshTask.status}` };
+    }
+
+    await this.refreshActiveSlaves();
+    if (this.activeSlaves >= this.config.maxConcurrency) {
+      return { status: 'noop', taskId: task.id, message: 'No concurrency slot available' };
+    }
+
+    await updateTask(freshTask.id, { status: 'assigned' });
+    this.emit('task:status_change', {
+      taskId: freshTask.id,
+      fromStatus: freshTask.status,
+      toStatus: 'assigned',
+      task: { ...freshTask, status: 'assigned' },
+    } satisfies TaskStatusChangeEvent);
+
+    this.activeSlaves++;
+    const recentDecisions = await this.getRecentDecisions();
+    const baseBranch = this.config.developBranch;
+
+    void runWorker(
+      freshTask,
+      this.state.mission,
+      recentDecisions,
+      additionalContext,
+      baseBranch,
+    )
+      .then(async (result) => {
+        if (result) {
+          await this.handleWorkerResult(freshTask, result);
+        } else {
+          await updateTask(freshTask.id, { status: 'failed' });
+        }
+        this.activeSlaves = Math.max(0, this.activeSlaves - 1);
+        await this.requestTurn(`worker_completed:${freshTask.id}`);
+      })
+      .catch(async (error) => {
+        console.error(`Worker failed for task ${freshTask.id}:`, error);
+        await updateTask(freshTask.id, { status: 'failed' });
+        this.activeSlaves = Math.max(0, this.activeSlaves - 1);
+        await this.requestTurn(`worker_failed:${freshTask.id}`);
+      });
+
+    return { status: 'started', taskId: freshTask.id, message: 'Worker assigned' };
+  }
+
+  private async handleWorkerResult(task: Task, result: TaskResult): Promise<void> {
+    if (result.status === 'completed') {
+      const newStatus = 'reviewing' as const;
+      await updateTask(task.id, {
+        status: newStatus,
+        worktree: result.worktree,
+        branch: result.branch,
+      });
+      this.emit('task:status_change', {
+        taskId: task.id,
+        fromStatus: 'assigned',
+        toStatus: newStatus,
+        task: { ...task, status: newStatus, worktree: result.worktree, branch: result.branch },
+      } satisfies TaskStatusChangeEvent);
+
+      await addHistoryEntry({
+        timestamp: new Date().toISOString(),
+        type: 'task_completed',
+        taskId: task.id,
+        summary: `Task completed, pending review. ${result.summary.slice(0, 100)}`,
+        details: { filesChanged: result.filesChanged },
+      });
+      return;
+    }
+
+    const newStatus = 'failed' as const;
+    await updateTask(task.id, { status: newStatus });
+    this.emit('task:status_change', {
+      taskId: task.id,
+      fromStatus: 'assigned',
+      toStatus: newStatus,
+      task: { ...task, status: newStatus },
+    } satisfies TaskStatusChangeEvent);
+  }
+
+  private async assignReviewer(task: Task): Promise<ReviewerAssignmentResult> {
+    const freshTask = await this.getTaskById(task.id);
+    if (!freshTask) {
+      return { status: 'not_found', taskId: task.id, message: 'Task not found' };
+    }
+    if (freshTask.status !== 'reviewing') {
+      return { status: 'noop', taskId: task.id, message: `Task is ${freshTask.status}` };
+    }
+
+    if (!freshTask.worktree || !freshTask.branch) {
+      await updateTask(freshTask.id, { status: 'approved' });
+      return { status: 'approved', taskId: freshTask.id, message: 'Task auto-approved without worktree' };
+    }
+
+    await this.refreshActiveSlaves();
+    if (this.activeSlaves >= this.config.maxConcurrency) {
+      return { status: 'noop', taskId: freshTask.id, message: 'No concurrency slot available' };
+    }
+
+    const diff = await getDiff(freshTask.branch, this.config.developBranch, freshTask.worktree);
+    if (!diff) {
+      await this.finalizeTaskWorktree(freshTask, 'approved');
+      return { status: 'approved', taskId: freshTask.id, message: 'Task auto-approved due to empty diff' };
+    }
+
+    this.activeSlaves++;
+    const recentDecisions = await this.getRecentDecisions();
+
+    void runReviewer(freshTask, this.state.mission, recentDecisions, diff)
+      .then(async (result) => {
+        if (result) {
+          await this.handleReviewResult(freshTask, result);
+        }
+        this.activeSlaves = Math.max(0, this.activeSlaves - 1);
+        await this.requestTurn(`review_completed:${freshTask.id}`);
+      })
+      .catch(async (error) => {
+        console.error(`Review failed for task ${freshTask.id}:`, error);
+        this.activeSlaves = Math.max(0, this.activeSlaves - 1);
+        await this.requestTurn(`review_failed:${freshTask.id}`);
+      });
+
+    return { status: 'started', taskId: freshTask.id, message: 'Reviewer assigned' };
+  }
+
+  private async handleReviewResult(task: Task, result: ReviewResult): Promise<void> {
+    await addHistoryEntry({
+      timestamp: new Date().toISOString(),
+      type: 'review',
+      taskId: task.id,
+      summary: `Review: ${result.verdict} (${result.confidence}) - ${result.summary}`,
+      details: { issues: result.issues, suggestions: result.suggestions },
+    });
+
+    const latestTask = await this.getTaskById(task.id);
+    const currentTask = latestTask || task;
+    const reviewEntry = {
+      attempt: currentTask.attemptCount + 1,
+      slaveId: 'reviewer',
+      review: result,
+      timestamp: new Date().toISOString(),
+    };
+
+    if (result.verdict === 'approve') {
+      const newStatus = 'approved' as const;
+      await updateTask(currentTask.id, {
+        status: newStatus,
+        attemptCount: currentTask.attemptCount + 1,
+        reviewHistory: [...currentTask.reviewHistory, reviewEntry],
+      });
+      await this.finalizeTaskWorktree(currentTask, newStatus);
+      return;
+    }
+
+    if (result.verdict === 'reject' || currentTask.attemptCount + 1 >= currentTask.maxAttempts) {
+      const newStatus = 'rejected' as const;
+      await updateTask(currentTask.id, {
+        status: newStatus,
+        attemptCount: currentTask.attemptCount + 1,
+        reviewHistory: [...currentTask.reviewHistory, reviewEntry],
+      });
+      await this.finalizeTaskWorktree(currentTask, newStatus);
+      return;
+    }
+
+    const additionalContext = this.buildRetryContext(result);
+    await updateTask(currentTask.id, {
+      status: 'pending',
+      attemptCount: currentTask.attemptCount + 1,
+      context: currentTask.context ? `${currentTask.context}\n\n${additionalContext}` : additionalContext,
+      reviewHistory: [...currentTask.reviewHistory, reviewEntry],
+    });
+  }
+
+  private buildRetryContext(result: ReviewResult): string {
+    let context = '## Previous Review Feedback\n\n';
+
+    if (result.issues.length > 0) {
+      context += '**Issues to fix:**\n' + result.issues.map(issue => `- ${issue}`).join('\n') + '\n\n';
+    }
+
+    if (result.suggestions.length > 0) {
+      context += '**Suggestions:**\n' + result.suggestions.map(suggestion => `- ${suggestion}`).join('\n') + '\n\n';
+    }
+
+    context += `**Summary:** ${result.summary}\n`;
+    return context;
+  }
+
+  private async mergeTask(task: Task): Promise<MergeTaskResult> {
+    const freshTask = await this.getTaskById(task.id);
+    if (!freshTask) {
+      return { status: 'not_found', taskId: task.id, message: 'Task not found' };
+    }
+    if (freshTask.status === 'completed') {
+      return { status: 'noop', taskId: task.id, message: 'Task already completed' };
+    }
+    if (freshTask.status !== 'approved') {
+      return { status: 'noop', taskId: task.id, message: `Task is ${freshTask.status}` };
+    }
+    if (!freshTask.branch) {
+      return { status: 'failed', taskId: task.id, message: 'Approved task is missing branch' };
+    }
+
+    const lastReview = freshTask.reviewHistory[freshTask.reviewHistory.length - 1];
+    if (lastReview && lastReview.review.verdict !== 'approve') {
+      return { status: 'failed', taskId: task.id, message: 'Last review verdict is not approve' };
+    }
+
+    const result = await mergeBranch(freshTask.branch, this.config.developBranch);
+    if (!result.success) {
+      await addHistoryEntry({
+        timestamp: new Date().toISOString(),
+        type: 'error',
+        taskId: freshTask.id,
+        summary: `Merge failed: ${result.message}`,
+      });
+      await updateTask(freshTask.id, { status: 'failed' });
+      return { status: 'failed', taskId: freshTask.id, message: result.message };
+    }
+
+    await addHistoryEntry({
+      timestamp: new Date().toISOString(),
+      type: 'merge',
+      taskId: freshTask.id,
+      summary: `Merged ${freshTask.branch} into ${this.config.developBranch}`,
+    });
+
+    await deleteBranch(freshTask.branch);
+    await updateTask(freshTask.id, {
+      status: 'completed',
+      worktree: undefined,
+      branch: undefined,
+    });
+
+    return { status: 'merged', taskId: freshTask.id, message: result.message };
+  }
+
+  private async cleanupTaskArtifacts(task: Task): Promise<CleanupArtifactsResult> {
+    let removedWorktree = false;
+    let removedBranch = false;
+
+    if (task.worktree) {
+      removedWorktree = await removeWorktree(task.worktree);
+    }
+
+    if (task.branch && ['completed', 'failed', 'rejected'].includes(task.status)) {
+      removedBranch = await deleteBranch(task.branch).catch(() => false);
+    }
+
+    await updateTask(task.id, {
+      worktree: undefined,
+      branch: removedBranch ? undefined : task.branch,
+    });
+
+    return { taskId: task.id, removedWorktree, removedBranch };
+  }
+
+  private async handleFailedTasks(): Promise<void> {
+    const tasks = await loadTasks();
+    const failedTasks = tasks.filter(task => task.status === 'failed' || task.status === 'rejected');
+
+    for (const task of failedTasks) {
+      await addFailedTask(task);
+      await addHistoryEntry({
+        timestamp: new Date().toISOString(),
+        type: 'task_failed',
+        taskId: task.id,
+        summary: `Task failed after ${task.attemptCount} attempts: ${task.description.slice(0, 100)}`,
+      });
+
+      const allTasks = await loadTasks();
+      const remainingTasks = allTasks.filter(item => item.id !== task.id);
+      await saveTasks(remainingTasks);
+    }
+  }
+
+  private async finalizeTaskWorktree(
+    task: Task,
+    status: Extract<Task['status'], 'approved' | 'failed' | 'rejected'>
+  ): Promise<void> {
+    if (task.worktree) {
+      await removeWorktree(task.worktree);
+    }
+
+    await updateTask(task.id, {
+      status,
+      worktree: undefined,
+    });
+  }
+
+  private async getRecentDecisions(): Promise<string[]> {
+    const history = await loadHistory();
+    return history
+      .filter(entry => entry.type === 'decision')
+      .slice(-5)
+      .map(entry => entry.summary);
+  }
+
   private emitMasterState(): void {
     this.emit('master:state', {
       phase: this.state.currentPhase,
       mission: this.state.mission,
       lastHeartbeat: this.state.lastHeartbeat,
+      lastInspection: this.state.lastInspection,
+      activeSince: this.state.activeSince,
+      pendingQuestions: this.state.pendingQuestions,
+      runtimeMode: this.state.runtimeMode,
+      turnStatus: this.state.turnStatus,
+      lastDecisionAt: this.state.lastDecisionAt,
+      runtimeSessionSummary: this.state.runtimeSessionSummary,
+      skippedWakeups: this.state.skippedWakeups,
+      lastSkippedTriggerReason: this.state.lastSkippedTriggerReason,
     } satisfies MasterStateEvent);
   }
-
-  // --- Control file communication ---
 
   private checkControlFile(): void {
     const controlFile = getControlFilePath();
@@ -601,10 +853,9 @@ export class Master extends EventEmitter {
       } else if (cmd.action === 'resume') {
         this.resume();
       } else if (cmd.action === 'stop') {
-        this.stop();
+        void this.stop();
       }
     } catch {
-      // Invalid control file, ignore and remove
       this.clearControlFile();
     }
   }
@@ -624,9 +875,14 @@ export class Master extends EventEmitter {
       writeFileSync(healthFile, JSON.stringify({
         pid: process.pid,
         phase: this.state.currentPhase,
+        turnStatus: this.state.turnStatus,
+        runtimeMode: this.state.runtimeMode,
         isPaused: this.isPaused,
         activeSlaves: this.activeSlaves,
         lastHeartbeat: this.state.lastHeartbeat,
+        lastDecisionAt: this.state.lastDecisionAt,
+        skippedWakeups: this.state.skippedWakeups,
+        lastSkippedTriggerReason: this.state.lastSkippedTriggerReason,
         heartbeatInterval: this.config.heartbeatInterval,
         timestamp: new Date().toISOString(),
       }));
@@ -635,53 +891,49 @@ export class Master extends EventEmitter {
     }
   }
 
-  // --- Stale worktree cleanup ---
-
   private async cleanupStaleWorktrees(): Promise<void> {
     const activeTasks = await loadTasks();
     const failedTasks = await loadFailedTasks();
     const activeWorktrees = new Set(
       activeTasks
-        .filter(t => t.worktree && ['pending', 'assigned', 'running', 'reviewing', 'failed', 'rejected'].includes(t.status))
-        .map(t => t.worktree!)
+        .filter(task => task.worktree && ['pending', 'assigned', 'running', 'reviewing', 'failed', 'rejected'].includes(task.status))
+        .map(task => task.worktree!)
     );
-    for (const task of failedTasks) {
-      if (task.worktree) activeWorktrees.add(task.worktree);
+    for (const task of failedTasks.filter(item => item.worktree)) {
+      activeWorktrees.add(task.worktree!);
     }
 
     const allWorktrees = await listWorktrees();
     const worktreesDirName = this.config.worktreesDir.split('/').filter(Boolean).pop() || this.config.worktreesDir;
-    const staleWorktrees = allWorktrees.filter(w =>
-      w.includes(worktreesDirName) && !activeWorktrees.has(w)
+    const staleWorktrees = allWorktrees.filter(worktree =>
+      worktree.includes(worktreesDirName) && !activeWorktrees.has(worktree)
     );
 
-    for (const wt of staleWorktrees) {
-      console.log(`Cleaning up stale worktree: ${wt}`);
-      await removeWorktree(wt);
+    for (const worktree of staleWorktrees) {
+      console.log(`Cleaning up stale worktree: ${worktree}`);
+      await removeWorktree(worktree);
     }
   }
 
   private async recoverStaleRuntimeState(): Promise<void> {
-    // Reset stale busy slaves to idle
     const slaves = await loadSlaves();
     let slaveChanged = false;
-    const recoveredSlaves = slaves.map(s => {
-      if (s.status !== 'busy') return s;
+    const recoveredSlaves = slaves.map(slave => {
+      if (slave.status !== 'busy') return slave;
       slaveChanged = true;
-      return { ...s, status: 'idle' as const, currentTask: undefined };
+      return { ...slave, status: 'idle' as const, currentTask: undefined };
     });
     if (slaveChanged) {
       await saveSlaves(recoveredSlaves);
     }
 
-    // Reset stale in-flight tasks to pending so scheduler can re-dispatch
     const tasks = await loadTasks();
     let taskChanged = false;
-    const recoveredTasks = tasks.map(t => {
-      if (t.status !== 'assigned' && t.status !== 'running') return t;
+    const recoveredTasks = tasks.map(task => {
+      if (task.status !== 'assigned' && task.status !== 'running') return task;
       taskChanged = true;
       return {
-        ...t,
+        ...task,
         status: 'pending' as const,
         updatedAt: new Date().toISOString(),
       };

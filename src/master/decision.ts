@@ -28,14 +28,6 @@ export interface Decision {
  */
 export class DecisionEngine {
   async decide(context: DecisionContext): Promise<Decision> {
-    // Check if there are pending questions that need human input
-    if (context.pendingQuestions.length > 0) {
-      return {
-        action: 'pause',
-        reason: 'Waiting for human input on pending questions',
-      };
-    }
-
     // Check if we're making progress
     const recentCompletions = context.recentHistory.filter(
       h => h.type === 'task_completed' || h.type === 'merge'

@@ -1,5 +1,5 @@
 // Auto-generated
-import type { Task, TaskStatus, SlaveType, SlaveStatus } from './index';
+import type { MasterRuntimeMode, MasterState, Question, Task, TaskStatus, SlaveType, SlaveStatus } from './index';
 
 export type EvoEventType =
   | 'heartbeat'
@@ -50,6 +50,15 @@ export interface MasterStateEvent {
   phase: string;
   mission: string;
   lastHeartbeat: string;
+  lastInspection: string;
+  activeSince: string;
+  pendingQuestions: Question[];
+  runtimeMode: MasterRuntimeMode;
+  turnStatus: MasterState['turnStatus'];
+  lastDecisionAt: string;
+  runtimeSessionSummary?: string;
+  skippedWakeups: number;
+  lastSkippedTriggerReason?: string;
 }
 
 export interface ProjectionUpdatedEvent {
