@@ -47,6 +47,24 @@ class RateLimiter {
 
 const apiLimiter = new RateLimiter(2, 2000) // Max 2 concurrent, 2s between calls
 
+// Type for query options
+interface QueryOptions {
+  systemPrompt?: string
+  cwd: string
+  env: Record<string, string | undefined>
+  permissionMode: 'bypassPermissions'
+  allowDangerouslySkipPermissions: boolean
+  maxTurns: number
+  model?: string
+}
+
+// Type for error message
+interface ErrorMessage {
+  type: string
+  subtype: string
+  errors?: string[]
+}
+
 function loadPrompt(type: SlaveType): string {
   const filename = `${type}.md`
   return readFileSync(join(PROMPTS_DIR, filename), 'utf-8')
@@ -217,11 +235,12 @@ export class SlaveLauncher {
             if (message.subtype === 'success') {
               output = message.result
             } else {
-              const errMsg = (message as any).errors?.join('; ') || 'Unknown error'
+              const errorMsg = message as ErrorMessage
+              const errMsg = errorMsg.errors?.join('; ') || 'Unknown error'
               this.log('error', `Slave ${this.slaveId} error: ${errMsg}`)
               output = JSON.stringify({
                 status: 'failed',
-                summary: (message as any).errors?.join('; ') || 'Unknown error',
+                summary: errMsg,
                 filesChanged: [],
               })
             }
@@ -417,7 +436,7 @@ export class SlaveLauncher {
 
     await apiLimiter.acquire()
     try {
-      const queryOptions: any = {
+      const queryOptions: QueryOptions = {
         cwd: resolve(process.cwd()),
         env: {
           ...(process.env as Record<string, string | undefined>),
