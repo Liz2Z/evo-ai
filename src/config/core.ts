@@ -5,6 +5,7 @@ import { xdgConfig } from 'xdg-basedir'
 import type { z } from 'zod'
 import { expandEnvVarsInObject } from './env'
 import { ConfigError, ValidationError } from './errors'
+import { Logger } from '../utils/logger'
 
 type ZodObjectLike = z.ZodObject<any>
 type Infer<T extends ZodObjectLike> = z.infer<T>
@@ -142,11 +143,13 @@ export class Settings<T extends ZodObjectLike> {
   private data: Infer<T> | null = null
   private listeners: Set<{ path: string[]; callback: (value: any) => void }> = new Set()
   private accessor: Accessor<Infer<T>> | null = null
+  private readonly logger: Logger
 
   constructor(appName: string, schema: T, options: SettingsOptions = {}) {
     this.appName = appName
     this.schema = schema
     this.options = options
+    this.logger = new Logger('Config')
   }
 
   private getPaths() {
@@ -239,7 +242,7 @@ export class Settings<T extends ZodObjectLike> {
       if (this.options.errorHandling === 'strict') {
         throw new ValidationError(`配置验证失败: ${error.message}`)
       }
-      console.warn(`[Config] 配置验证失败: ${error.message}，使用默认值`)
+      this.logger.warn(`配置验证失败: ${error.message}，使用默认值`)
       this.data = this.schema.parse({})
     }
   }

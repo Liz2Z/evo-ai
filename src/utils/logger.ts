@@ -122,3 +122,52 @@ export function addToGlobalBuffer(taskId: string, entry: LogEntry): void {
   }
   globalLogBuffer.set(taskId, buffer)
 }
+
+/**
+ * Simple logger for master and CLI operations
+ */
+export class Logger {
+  private readonly context: string
+
+  constructor(context: string) {
+    this.context = context
+  }
+
+  private formatMessage(message: string): string {
+    const timestamp = new Date().toISOString().split('T')[1].slice(0, -1)
+    return `[${timestamp}] [${this.context}] ${message}`
+  }
+
+  info(message: string): void {
+    console.log(this.formatMessage(message))
+  }
+
+  error(message: string): void {
+    console.error(this.formatMessage(message))
+  }
+
+  warn(message: string): void {
+    console.warn(this.formatMessage(message))
+  }
+
+  debug(message: string): void {
+    if (process.env.DEBUG) {
+      console.log(this.formatMessage(message))
+    }
+  }
+
+  /**
+   * Output user-facing messages without formatting
+   * Used for CLI responses, help text, etc.
+   */
+  userOutput(message: string): void {
+    console.log(message)
+  }
+
+  /**
+   * Output user-facing errors without formatting
+   */
+  userError(message: string): void {
+    console.error(message)
+  }
+}

@@ -2,6 +2,7 @@
 import { EventEmitter } from 'events'
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs'
 import { getControlFilePath, getHealthFilePath } from '../runtime/paths'
+import { Logger } from '../utils/logger'
 import { runInspector, runReviewer, runWorker } from '../slave/launcher'
 import type { Config, MasterState, Question, ReviewResult, Task, TaskResult } from '../types'
 import type { HeartbeatTickEvent, MasterStateEvent, TaskStatusChangeEvent } from '../types/events'
@@ -47,6 +48,7 @@ export class Master extends EventEmitter {
   private currentTurnPromise: Promise<void> | null = null
   private readonly tools: MasterTools
   private runtime: MasterRuntime
+  private readonly logger: Logger
 
   constructor(config: Config, mission: string, options?: MasterOptions) {
     super()
@@ -66,6 +68,7 @@ export class Master extends EventEmitter {
     }
     this.runtime = this.createRuntime(this.state)
     this.tools = this.createTools()
+    this.logger = new Logger('Master')
   }
 
   async start(): Promise<void> {
@@ -84,10 +87,10 @@ export class Master extends EventEmitter {
 
     this.runtime = this.createRuntime(this.state)
 
-    console.log(`Master starting with mission: ${this.state.mission}`)
-    console.log(`Heartbeat interval: ${this.config.heartbeatInterval}ms`)
-    console.log(`Max concurrency: ${this.config.maxConcurrency}`)
-    console.log(`Master runtime mode: ${this.config.master.runtimeMode}`)
+    this.logger.info(`Master starting with mission: ${this.state.mission}`)
+    this.logger.info(`Heartbeat interval: ${this.config.heartbeatInterval}ms`)
+    this.logger.info(`Max concurrency: ${this.config.maxConcurrency}`)
+    this.logger.info(`Master runtime mode: ${this.config.master.runtimeMode}`)
 
     await this.recoverStaleRuntimeState()
     await this.cleanupStaleWorktrees()
@@ -127,7 +130,7 @@ export class Master extends EventEmitter {
       await saveMasterState(this.state)
     }
 
-    console.log('Master stopped')
+    this.logger.info('Master stopped')
   }
 
   pause(): void {
@@ -137,7 +140,7 @@ export class Master extends EventEmitter {
     this.writeHealthFile()
     void saveMasterState(this.state)
     this.emitMasterState()
-    console.log('Master paused')
+    this.logger.info('Master paused')
   }
 
   resume(): void {
@@ -147,7 +150,7 @@ export class Master extends EventEmitter {
     this.writeHealthFile()
     void saveMasterState(this.state)
     this.emitMasterState()
-    console.log('Master resumed')
+    this.logger.info('Master resumed')
     void this.requestTurn('resume')
   }
 
@@ -581,7 +584,7 @@ export class Master extends EventEmitter {
         await this.requestTurn(`worker_completed:${freshTask.id}`)
       })
       .catch(async (error) => {
-        console.error(`Worker failed for task ${freshTask.id}:`, error)
+        this.logger.error(`Worker failed for task ${freshTask.id}: ${error}`)
         await this.markWorkerFailure(
           freshTask.id,
           error instanceof Error ? error.message : String(error),
@@ -697,7 +700,7 @@ export class Master extends EventEmitter {
         await this.requestTurn(`review_completed:${freshTask.id}`)
       })
       .catch(async (error) => {
-        console.error(`Review failed for task ${freshTask.id}:`, error)
+        this.logger.error(`Review failed for task ${freshTask.id}: ${error}`)
         this.activeSlaves = Math.max(0, this.activeSlaves - 1)
         await this.requestTurn(`review_failed:${freshTask.id}`)
       })
@@ -984,7 +987,7 @@ export class Master extends EventEmitter {
     )
 
     for (const worktree of staleWorktrees) {
-      console.log(`Cleaning up stale worktree: ${worktree}`)
+      this.logger.info(`Cleaning up stale worktree: ${worktree}`)
       await removeWorktree(worktree)
     }
   }
