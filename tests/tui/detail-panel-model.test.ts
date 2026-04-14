@@ -1,10 +1,10 @@
 // Auto-generated
-import { describe, expect, test } from 'bun:test';
-import type { SlaveInfo, Task } from '../../src/types';
-import { getActiveTaskSlaves, isActiveTask } from '../../src/tui/components/detailPanelModel';
+import { describe, expect, test } from 'bun:test'
+import { getActiveTaskSlaves, isActiveTask } from '../../src/tui/components/detailPanelModel'
+import type { SlaveInfo, Task } from '../../src/types'
 
 function task(status: Task['status']): Task {
-  const now = new Date().toISOString();
+  const now = new Date().toISOString()
   return {
     id: 'task-1',
     type: 'other',
@@ -16,7 +16,7 @@ function task(status: Task['status']): Task {
     attemptCount: 0,
     maxAttempts: 3,
     reviewHistory: [],
-  };
+  }
 }
 
 function slave(overrides: Partial<SlaveInfo>): SlaveInfo {
@@ -27,15 +27,15 @@ function slave(overrides: Partial<SlaveInfo>): SlaveInfo {
     currentTask: 'task-1',
     startedAt: '2026-04-08T10:00:00.000Z',
     ...overrides,
-  };
+  }
 }
 
 describe('detailPanelModel', () => {
   test('assigned 和 reviewing 任务应视为工作中', () => {
-    expect(isActiveTask(task('assigned'))).toBe(true);
-    expect(isActiveTask(task('reviewing'))).toBe(true);
-    expect(isActiveTask(task('completed'))).toBe(false);
-  });
+    expect(isActiveTask(task('assigned'))).toBe(true)
+    expect(isActiveTask(task('reviewing'))).toBe(true)
+    expect(isActiveTask(task('completed'))).toBe(false)
+  })
 
   test('仅返回当前任务的 busy slaves，并按启动时间排序', () => {
     const result = getActiveTaskSlaves('task-1', [
@@ -43,8 +43,8 @@ describe('detailPanelModel', () => {
       slave({ id: 'worker-1', startedAt: '2026-04-08T10:00:01.000Z' }),
       slave({ id: 'idle-worker', status: 'idle' }),
       slave({ id: 'other-task', currentTask: 'task-2' }),
-    ]);
+    ])
 
-    expect(result.map(entry => entry.id)).toEqual(['worker-1', 'worker-2']);
-  });
-});
+    expect(result.map((entry) => entry.id)).toEqual(['worker-1', 'worker-2'])
+  })
+})

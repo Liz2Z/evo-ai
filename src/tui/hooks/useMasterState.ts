@@ -1,44 +1,45 @@
 // Auto-generated
-import { useState, useEffect, useCallback } from 'react';
-import type { EventEmitter } from 'events';
-import type { Task, SlaveInfo, MasterState, LogEntry } from '../../types';
+
+import type { EventEmitter } from 'events'
+import { useCallback, useEffect, useState } from 'react'
+import type { LogEntry, MasterState, SlaveInfo, Task } from '../../types'
 import type {
   HeartbeatTickEvent,
-  TaskStatusChangeEvent,
   LogMessageEvent,
   MasterStateEvent,
-} from '../../types/events';
+  TaskStatusChangeEvent,
+} from '../../types/events'
+import { getGlobalLogBuffer } from '../../utils/logger'
 import {
-  loadTasks,
+  getProjectionEmitter,
   loadSlaves,
   loadMasterState as loadState,
-  getProjectionEmitter,
-} from '../../utils/storage';
-import { getGlobalLogBuffer } from '../../utils/logger';
+  loadTasks,
+} from '../../utils/storage'
 
 export interface MasterStateData {
-  tasks: Task[];
-  slaves: SlaveInfo[];
-  masterState: MasterState | null;
-  selectedTaskId: string | null;
-  lastHeartbeat: string;
-  phase: string;
-  activeSlaves: number;
-  pendingCount: number;
-  logs: Map<string, LogEntry[]>;
+  tasks: Task[]
+  slaves: SlaveInfo[]
+  masterState: MasterState | null
+  selectedTaskId: string | null
+  lastHeartbeat: string
+  phase: string
+  activeSlaves: number
+  pendingCount: number
+  logs: Map<string, LogEntry[]>
 }
 
 export function useMasterState(emitter: EventEmitter | null): MasterStateData & {
-  selectTask: (taskId: string | null) => void;
+  selectTask: (taskId: string | null) => void
 } {
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [slaves, setSlaves] = useState<SlaveInfo[]>([]);
-  const [masterState, setMasterState] = useState<MasterState | null>(null);
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
-  const [lastHeartbeat, setLastHeartbeat] = useState('');
-  const [phase, setPhase] = useState('initializing');
-  const [activeSlaves, setActiveSlaves] = useState(0);
-  const [pendingCount, setPendingCount] = useState(0);
+  const [tasks, setTasks] = useState<Task[]>([])
+  const [slaves, setSlaves] = useState<SlaveInfo[]>([])
+  const [masterState, setMasterState] = useState<MasterState | null>(null)
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
+  const [lastHeartbeat, setLastHeartbeat] = useState('')
+  const [phase, setPhase] = useState('initializing')
+  const [activeSlaves, setActiveSlaves] = useState(0)
+  const [pendingCount, setPendingCount] = useState(0)
 
   const pollState = useCallback(async () => {
     try {
@@ -46,59 +47,59 @@ export function useMasterState(emitter: EventEmitter | null): MasterStateData & 
         loadTasks(),
         loadSlaves(),
         loadState(),
-      ]);
-      setTasks(loadedTasks);
-      setSlaves(loadedSlaves);
-      setMasterState(loadedState);
-      setPhase(loadedState.currentPhase || 'initializing');
-      setLastHeartbeat(loadedState.lastHeartbeat || '');
-      setActiveSlaves(loadedSlaves.filter(s => s.status === 'busy').length);
-      setPendingCount(loadedTasks.filter(t => t.status === 'pending').length);
+      ])
+      setTasks(loadedTasks)
+      setSlaves(loadedSlaves)
+      setMasterState(loadedState)
+      setPhase(loadedState.currentPhase || 'initializing')
+      setLastHeartbeat(loadedState.lastHeartbeat || '')
+      setActiveSlaves(loadedSlaves.filter((s) => s.status === 'busy').length)
+      setPendingCount(loadedTasks.filter((t) => t.status === 'pending').length)
     } catch {
       // State files may not exist yet
     }
-  }, []);
+  }, [])
 
   useEffect(() => {
     // Initial poll
-    pollState();
+    pollState()
 
-    const projectionEmitter = getProjectionEmitter();
+    const projectionEmitter = getProjectionEmitter()
     const onProjectionUpdated = () => {
-      pollState();
-    };
-    projectionEmitter.on('projection:updated', onProjectionUpdated);
+      pollState()
+    }
+    projectionEmitter.on('projection:updated', onProjectionUpdated)
 
     // Poll every 3 seconds as reconciliation
-    const pollInterval = setInterval(pollState, 3000);
+    const pollInterval = setInterval(pollState, 3000)
 
     return () => {
-      clearInterval(pollInterval);
-      projectionEmitter.off('projection:updated', onProjectionUpdated);
-    };
-  }, [pollState]);
+      clearInterval(pollInterval)
+      projectionEmitter.off('projection:updated', onProjectionUpdated)
+    }
+  }, [pollState])
 
   useEffect(() => {
-    if (!emitter) return;
+    if (!emitter) return
 
     const onHeartbeat = (event: HeartbeatTickEvent) => {
-      setLastHeartbeat(event.timestamp);
-      setPhase(event.phase);
-      setActiveSlaves(event.activeSlaves);
-      setPendingCount(event.pendingCount);
-    };
+      setLastHeartbeat(event.timestamp)
+      setPhase(event.phase)
+      setActiveSlaves(event.activeSlaves)
+      setPendingCount(event.pendingCount)
+    }
 
     const onTaskChange = (event: TaskStatusChangeEvent) => {
-      setTasks(prev =>
-        prev.map(t => (t.id === event.taskId ? { ...t, status: event.toStatus } : t))
-      );
+      setTasks((prev) =>
+        prev.map((t) => (t.id === event.taskId ? { ...t, status: event.toStatus } : t)),
+      )
       // Also refresh from disk on significant changes
-      pollState();
-    };
+      pollState()
+    }
 
     const onMasterState = (event: MasterStateEvent) => {
-      setPhase(event.phase);
-      setLastHeartbeat(event.lastHeartbeat);
+      setPhase(event.phase)
+      setLastHeartbeat(event.lastHeartbeat)
       setMasterState({
         mission: event.mission,
         currentPhase: event.phase,
@@ -112,13 +113,13 @@ export function useMasterState(emitter: EventEmitter | null): MasterStateData & 
         runtimeSessionSummary: event.runtimeSessionSummary,
         skippedWakeups: event.skippedWakeups,
         lastSkippedTriggerReason: event.lastSkippedTriggerReason,
-      });
-    };
+      })
+    }
 
     const onLogMessage = (event: LogMessageEvent) => {
       if (event.taskId) {
-        const buffer = getGlobalLogBuffer();
-        const existing = buffer.get(event.taskId) || [];
+        const buffer = getGlobalLogBuffer()
+        const existing = buffer.get(event.taskId) || []
         buffer.set(event.taskId, [
           ...existing,
           {
@@ -128,22 +129,22 @@ export function useMasterState(emitter: EventEmitter | null): MasterStateData & 
             level: event.level,
             message: event.message,
           },
-        ]);
+        ])
       }
-    };
+    }
 
-    emitter.on('heartbeat', onHeartbeat);
-    emitter.on('task:status_change', onTaskChange);
-    emitter.on('master:state', onMasterState);
-    emitter.on('log:message', onLogMessage);
+    emitter.on('heartbeat', onHeartbeat)
+    emitter.on('task:status_change', onTaskChange)
+    emitter.on('master:state', onMasterState)
+    emitter.on('log:message', onLogMessage)
 
     return () => {
-      emitter.off('heartbeat', onHeartbeat);
-      emitter.off('task:status_change', onTaskChange);
-      emitter.off('master:state', onMasterState);
-      emitter.off('log:message', onLogMessage);
-    };
-  }, [emitter, pollState]);
+      emitter.off('heartbeat', onHeartbeat)
+      emitter.off('task:status_change', onTaskChange)
+      emitter.off('master:state', onMasterState)
+      emitter.off('log:message', onLogMessage)
+    }
+  }, [emitter, pollState])
 
   return {
     tasks,
@@ -156,5 +157,5 @@ export function useMasterState(emitter: EventEmitter | null): MasterStateData & 
     pendingCount,
     logs: getGlobalLogBuffer(),
     selectTask: setSelectedTaskId,
-  };
+  }
 }

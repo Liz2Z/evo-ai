@@ -1,10 +1,10 @@
 // Auto-generated
-import { describe, expect, test } from 'bun:test';
-import type { Task } from '../../src/types';
-import { getGroupedTaskIds } from '../../src/tui/components/worktreeListModel';
+import { describe, expect, test } from 'bun:test'
+import { getGroupedTaskIds } from '../../src/tui/components/worktreeListModel'
+import type { Task } from '../../src/types'
 
 function createTask(id: string, status: Task['status']): Task {
-  const now = new Date().toISOString();
+  const now = new Date().toISOString()
   return {
     id,
     type: 'other',
@@ -16,7 +16,7 @@ function createTask(id: string, status: Task['status']): Task {
     attemptCount: 0,
     maxAttempts: 3,
     reviewHistory: [],
-  };
+  }
 }
 
 describe('worktreeListModel', () => {
@@ -29,10 +29,10 @@ describe('worktreeListModel', () => {
       createTask('3', 'running'),
       createTask('9', 'pending'),
       createTask('4', 'running'),
-    ];
+    ]
 
-    expect(getGroupedTaskIds(tasks)).toEqual(['1', '2', '3', '4', '7', '8', '9']);
-  });
+    expect(getGroupedTaskIds(tasks)).toEqual(['1', '2', '3', '4', '7', '8', '9'])
+  })
 
   test('assigned 应并入 running 组导航', () => {
     const tasks: Task[] = [
@@ -40,8 +40,8 @@ describe('worktreeListModel', () => {
       createTask('2', 'assigned'),
       createTask('3', 'running'),
       createTask('4', 'reviewing'),
-    ];
+    ]
 
-    expect(getGroupedTaskIds(tasks)).toEqual(['2', '3', '4', '1']);
-  });
-});
+    expect(getGroupedTaskIds(tasks)).toEqual(['2', '3', '4', '1'])
+  })
+})
