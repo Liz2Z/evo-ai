@@ -554,14 +554,20 @@ export class Master extends EventEmitter {
         if (result) {
           await this.handleWorkerResult(freshTask, result);
         } else {
-          await updateTask(freshTask.id, { status: 'failed' });
+          await this.markWorkerFailure(
+            freshTask.id,
+            'Worker returned no result',
+          );
         }
         this.activeSlaves = Math.max(0, this.activeSlaves - 1);
         await this.requestTurn(`worker_completed:${freshTask.id}`);
       })
       .catch(async (error) => {
         console.error(`Worker failed for task ${freshTask.id}:`, error);
-        await updateTask(freshTask.id, { status: 'failed' });
+        await this.markWorkerFailure(
+          freshTask.id,
+          error instanceof Error ? error.message : String(error),
+        );
         this.activeSlaves = Math.max(0, this.activeSlaves - 1);
         await this.requestTurn(`worker_failed:${freshTask.id}`);
       });
@@ -594,13 +600,37 @@ export class Master extends EventEmitter {
       return;
     }
 
-    const newStatus = 'failed' as const;
-    await updateTask(task.id, { status: newStatus });
+    await this.markWorkerFailure(task.id, result.error || result.summary);
+  }
+
+  private async markWorkerFailure(taskId: string, reason: string): Promise<void> {
+    const latestTask = await this.getTaskById(taskId);
+    if (!latestTask) return;
+
+    const nextAttemptCount = latestTask.attemptCount + 1;
+    const retryable = nextAttemptCount < latestTask.maxAttempts;
+    const failureContext = `Worker failure (attempt ${nextAttemptCount}/${latestTask.maxAttempts}): ${reason}`;
+    const mergedContext = latestTask.context
+      ? `${latestTask.context}\n\n${failureContext}`
+      : failureContext;
+    const nextStatus: Task['status'] = retryable ? 'pending' : 'failed';
+
+    await updateTask(taskId, {
+      status: nextStatus,
+      attemptCount: nextAttemptCount,
+      context: mergedContext,
+    });
+
     this.emit('task:status_change', {
-      taskId: task.id,
-      fromStatus: 'assigned',
-      toStatus: newStatus,
-      task: { ...task, status: newStatus },
+      taskId,
+      fromStatus: latestTask.status,
+      toStatus: nextStatus,
+      task: {
+        ...latestTask,
+        status: nextStatus,
+        attemptCount: nextAttemptCount,
+        context: mergedContext,
+      },
     } satisfies TaskStatusChangeEvent);
   }
 

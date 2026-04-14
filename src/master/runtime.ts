@@ -5,9 +5,8 @@ import {
   tool,
 } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { settings } from "../config";
+import { settings, getConfiguredModel } from "../config";
 import { decisionEngine } from "./decision";
-import { getConfiguredModel } from "../slave/launcher";
 import type {
   Config,
   HistoryEntry,
@@ -251,9 +250,11 @@ export class MasterAgentAdapter {
 
 class HeartbeatAgentRuntime implements MasterRuntime {
   private readonly adapter: MasterAgentAdapter;
+  private readonly fallbackRuntime: HybridMasterRuntime;
 
   constructor(adapter?: MasterAgentAdapter) {
     this.adapter = adapter || new MasterAgentAdapter();
+    this.fallbackRuntime = new HybridMasterRuntime();
   }
 
   async init(
@@ -265,13 +266,35 @@ class HeartbeatAgentRuntime implements MasterRuntime {
     context: MasterRuntimeContext,
     tools: MasterTools,
   ): Promise<MasterRuntimeTurnResult> {
-    const result = await this.adapter.run(context, tools);
-    return {
-      summary: result.summary,
-      toolCalls: result.toolCalls,
-      unauthorizedToolCalls: result.unauthorizedToolCalls,
-      sessionSummary: result.sessionSummary,
-    };
+    try {
+      const result = await this.adapter.run(context, tools);
+      if (result.toolCalls.length > 0) {
+        return {
+          summary: result.summary,
+          toolCalls: result.toolCalls,
+          unauthorizedToolCalls: result.unauthorizedToolCalls,
+          sessionSummary: result.sessionSummary,
+        };
+      }
+
+      const fallback = await this.fallbackRuntime.runTurn(context, tools);
+      return {
+        summary: `${result.summary}\nFallback: ${fallback.summary}`,
+        toolCalls: fallback.toolCalls,
+        unauthorizedToolCalls: [
+          ...result.unauthorizedToolCalls,
+          ...fallback.unauthorizedToolCalls,
+        ],
+        sessionSummary: result.sessionSummary,
+      };
+    } catch (error) {
+      const fallback = await this.fallbackRuntime.runTurn(context, tools);
+      return {
+        summary: `Adapter failed: ${(error as Error).message}\nFallback: ${fallback.summary}`,
+        toolCalls: fallback.toolCalls,
+        unauthorizedToolCalls: fallback.unauthorizedToolCalls,
+      };
+    }
   }
 
   async dispose(): Promise<void> {}
@@ -777,5 +800,8 @@ function groupTaskCounts(tasks: Task[]): Record<string, number> {
 }
 
 function normalizeMasterToolName(toolName: string): string {
-  return toolName.split("__").filter(Boolean).pop() || toolName;
+  return toolName
+    .split(/__|[.:/]/)
+    .filter(Boolean)
+    .pop() || toolName;
 }

@@ -1,28 +1,28 @@
 // Auto-generated
-import { describe, expect, test } from 'bun:test';
-import { getConfiguredModel, getModelTierForPurpose } from '../../src/slave/launcher';
+import { describe, expect, test } from "bun:test";
+import { getConfiguredModel, getModelTierForPurpose } from "../../src/config";
 
-describe('模型档位映射', () => {
+describe("模型档位映射", () => {
   const config = {
     models: {
-      lite: 'haiku',
-      pro: 'sonnet',
-      max: 'opus',
+      lite: "haiku",
+      pro: "sonnet",
+      max: "opus",
     },
   };
 
-  test('title 生成使用 lite', () => {
-    expect(getModelTierForPurpose('taskTitle')).toBe('lite');
-    expect(getConfiguredModel(config, 'taskTitle')).toBe('haiku');
+  test("title 生成使用 lite", () => {
+    expect(getModelTierForPurpose("taskTitle")).toBe("lite");
+    expect(getConfiguredModel(config, "taskTitle")).toBe("haiku");
   });
 
-  test('slave 执行使用 pro', () => {
-    expect(getModelTierForPurpose('slave')).toBe('pro');
-    expect(getConfiguredModel(config, 'slave')).toBe('sonnet');
+  test("slave 执行使用 pro", () => {
+    expect(getModelTierForPurpose("slave")).toBe("pro");
+    expect(getConfiguredModel(config, "slave")).toBe("sonnet");
   });
 
-  test('master 执行使用 max', () => {
-    expect(getModelTierForPurpose('master')).toBe('max');
-    expect(getConfiguredModel(config, 'master')).toBe('opus');
+  test("master 执行使用 max", () => {
+    expect(getModelTierForPurpose("master")).toBe("max");
+    expect(getConfiguredModel(config, "master")).toBe("opus");
   });
 });

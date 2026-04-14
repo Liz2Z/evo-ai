@@ -4,7 +4,6 @@ import { readFileSync } from "fs";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type {
   Config,
-  ModelTier,
   SlaveType,
   Task,
   TaskResult,
@@ -19,7 +18,7 @@ import {
 } from "../utils/git";
 import { SlaveLogger } from "../utils/logger";
 import type { LogMessageEvent } from "../types/events";
-import { settings } from "../config";
+import { settings, getConfiguredModel } from "../config";
 
 const PROMPTS_DIR = join(import.meta.dir, "prompts");
 
@@ -60,12 +59,6 @@ class RateLimiter {
 }
 
 const apiLimiter = new RateLimiter(2, 2000); // Max 2 concurrent, 2s between calls
-type ModelPurpose = "taskTitle" | "slave" | "master";
-const MODEL_TIER_BY_PURPOSE: Record<ModelPurpose, ModelTier> = {
-  taskTitle: "lite",
-  slave: "pro",
-  master: "max",
-};
 
 function loadPrompt(type: SlaveType): string {
   const filename = `${type}.md`;
@@ -101,20 +94,6 @@ function sanitizeModelTitle(input: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 40);
 }
-
-export function getModelTierForPurpose(purpose: ModelPurpose): ModelTier {
-  return MODEL_TIER_BY_PURPOSE[purpose];
-}
-
-export function getConfiguredModel(
-  config: Pick<Config, "models">,
-  purpose: ModelPurpose,
-): string | undefined {
-  const tier = getModelTierForPurpose(purpose);
-  const model = config.models?.[tier]?.trim();
-  return model ? model : undefined;
-}
-
 
 export interface SlaveOptions {
   type: SlaveType;
@@ -236,13 +215,15 @@ export class SlaveLauncher {
             systemPrompt: fullSystemPrompt,
             cwd: resolve(workingDir),
             env: {
+              ...(process.env as Record<string, string | undefined>),
               ANTHROPIC_API_KEY: config.provider?.apiKey,
               ANTHROPIC_BASE_URL: config.provider?.baseUrl,
             },
             ...(slaveModel ? { model: slaveModel } : {}),
             permissionMode: "bypassPermissions",
             allowDangerouslySkipPermissions: true,
-            maxTurns: this.type === "inspector" ? 10 : 20,
+            maxTurns:
+              this.type === "inspector" ? 12 : this.type === "reviewer" ? 30 : 60,
           },
         });
 
@@ -324,11 +305,25 @@ export class SlaveLauncher {
 
   private buildTaskPrompt(): string {
     if (this.type === "inspector") {
-      return `Please scan the codebase and identify issues or improvements. Output your findings as a JSON array of tasks.`;
+      return [
+        "Scan the repository and output ONLY valid JSON.",
+        "Schema: {\"tasks\":[{\"description\":\"...\",\"type\":\"fix|feature|refactor|test|docs|other\",\"priority\":1-10,\"context\":\"optional\"}]}",
+        "Do not include markdown or explanations.",
+      ].join("\n");
     } else if (this.type === "reviewer") {
-      return `Please review the code changes and provide your assessment in the specified JSON format.`;
+      return [
+        "Review the code changes and output ONLY valid JSON.",
+        "Schema: {\"verdict\":\"approve|request_changes|reject\",\"confidence\":0-1,\"summary\":\"...\",\"issues\":[\"...\"],\"suggestions\":[\"...\"]}",
+        "Do not include markdown or explanations.",
+      ].join("\n");
     } else {
-      return `Please complete the assigned task. When done, provide a summary of what was done.`;
+      return [
+        "Complete the assigned task by editing files directly in this worktree.",
+        "When finished, output ONLY valid JSON and stop.",
+        "Schema: {\"status\":\"completed|failed\",\"summary\":\"...\",\"filesChanged\":[\"path1\",\"path2\"],\"notes\":\"optional\"}",
+        "Do not ask follow-up questions. Make reasonable assumptions and proceed.",
+        "Do not include markdown or explanations outside JSON.",
+      ].join("\n");
     }
   }
 
@@ -447,6 +442,7 @@ export class SlaveLauncher {
       const queryOptions: any = {
         cwd: resolve(process.cwd()),
         env: {
+          ...(process.env as Record<string, string | undefined>),
           ANTHROPIC_API_KEY: settings.provider.get().apiKey,
           ANTHROPIC_BASE_URL: settings.provider.get().baseUrl,
         },

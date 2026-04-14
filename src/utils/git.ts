@@ -144,7 +144,14 @@ export async function mergeBranch(branch: string, baseBranch: string): Promise<{
   }
 
   // Merge
-  const mergeResult = await runGit(['merge', '--no-ff', branch, '-m', `Merge ${branch}`]);
+  const mergeResult = await runGit([
+    'merge',
+    '--no-ff',
+    '--autostash',
+    branch,
+    '-m',
+    `Merge ${branch}`,
+  ]);
   if (mergeResult.exitCode !== 0) {
     return { success: false, message: mergeResult.stderr };
   }

@@ -5,6 +5,7 @@ import { configSchema } from "./schemas";
 export type { Config } from "./schemas";
 export * from "./core";
 export * from "./errors";
+export * from "./models";
 export * from "./schemas";
 
 const manager = new Settings("evo-ai", configSchema);
