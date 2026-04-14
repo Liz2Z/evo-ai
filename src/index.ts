@@ -5,11 +5,14 @@ import { parseArgs } from 'util'
 import { settings } from './config'
 
 import { Master } from './master/scheduler'
+import { Logger } from './utils/logger'
 import { getControlFilePath, getHealthFilePath, getRuntimeDataDir } from './runtime/paths'
 import { startTUI } from './tui/index'
 import type { Task } from './types'
 import { branchExists, isGitRepo } from './utils/git'
 import { answerQuestion, loadFailedTasks, loadMasterState, loadTasks } from './utils/storage'
+
+const logger = new Logger('CLI')
 
 function resolveStartupMission(savedMission?: string, cliMission?: string): string {
   const mission = cliMission?.trim() || savedMission?.trim() || ''
@@ -108,13 +111,13 @@ async function main() {
   const answerQuestionId = getString(values.answer)
   if (answerQuestionId && positionals[0]) {
     await answerQuestion(answerQuestionId, positionals[0])
-    console.log(`Answered question ${answerQuestionId}`)
+    logger.info(`Answered question ${answerQuestionId}`)
     process.exit(0)
   }
 
   // Check if we're in a git repo
   if (!(await isGitRepo())) {
-    console.error('Error: Not in a git repository. Please run from a git repo.')
+    logger.userError('Error: Not in a git repository. Please run from a git repo.')
     process.exit(1)
   }
 
@@ -129,7 +132,7 @@ async function main() {
   if (interval) {
     const parsed = parseInt(interval)
     if (isNaN(parsed) || parsed < 1) {
-      console.error('Error: --interval must be a positive number (seconds).')
+      logger.userError('Error: --interval must be a positive number (seconds).')
       process.exit(1)
     }
     config.heartbeatInterval = parsed * 1000
@@ -137,14 +140,14 @@ async function main() {
   if (concurrency) {
     const parsed = parseInt(concurrency)
     if (isNaN(parsed) || parsed < 1 || parsed > 20) {
-      console.error('Error: --concurrency must be between 1 and 20.')
+      logger.userError('Error: --concurrency must be between 1 and 20.')
       process.exit(1)
     }
     config.maxConcurrency = parsed
   }
 
   if (!(await branchExists(config.developBranch))) {
-    console.error(`Error: Configured develop branch does not exist: ${config.developBranch}`)
+    logger.userError(`Error: Configured develop branch does not exist: ${config.developBranch}`)
     process.exit(1)
   }
 
@@ -152,7 +155,7 @@ async function main() {
   try {
     resolvedMission = resolveStartupMission(savedState.mission, cliMission)
   } catch (error) {
-    console.error((error as Error).message)
+    logger.userError((error as Error).message)
     process.exit(1)
   }
 
@@ -161,7 +164,7 @@ async function main() {
 
   // Handle signals
   process.on('SIGINT', async () => {
-    console.log('\nShutting down...')
+    logger.info('\nShutting down...')
     await master.stop()
     process.exit(0)
   })
@@ -174,35 +177,35 @@ async function main() {
   // Handle commands that require running master
   if (values.pause) {
     if (!(await isMasterHealthy())) {
-      console.error('Error: Master is not running.')
+      logger.error('Error: Master is not running.')
       process.exit(1)
     }
     sendControlCommand('pause')
-    console.log('Pause command sent to master.')
+    logger.info('Pause command sent to master.')
     process.exit(0)
   }
 
   if (values.resume) {
     if (!(await isMasterHealthy())) {
-      console.error('Error: Master is not running.')
+      logger.error('Error: Master is not running.')
       process.exit(1)
     }
     sendControlCommand('resume')
-    console.log('Resume command sent to master.')
+    logger.info('Resume command sent to master.')
     process.exit(0)
   }
 
   const cancelTaskId = getString(values.cancel)
   if (cancelTaskId) {
     await master.cancelTask(cancelTaskId)
-    console.log(`Cancelled task ${cancelTaskId}`)
+    logger.info(`Cancelled task ${cancelTaskId}`)
     process.exit(0)
   }
 
   const addTaskDesc = getString(values.add)
   if (addTaskDesc) {
     const task = await master.addTaskManually(addTaskDesc)
-    console.log(`Created task ${task.id}: ${task.description}`)
+    logger.info(`Created task ${task.id}: ${task.description}`)
     process.exit(0)
   }
 
@@ -234,7 +237,7 @@ async function main() {
 }
 
 function printHelp() {
-  console.log(`
+  logger.userOutput(`
 evo-ai - AI Supervision System
 
 Usage:
@@ -244,7 +247,7 @@ Options:
   -m, --mission <text>      Set the master's mission
   -i, --interval <seconds>  Set heartbeat interval (default: 30)
   -c, --concurrency <n>     Set max concurrent slaves (default: 3)
-  
+
 Commands:
   -s, --status              Show master status
   -t, --tasks               List current tasks
@@ -268,20 +271,20 @@ async function printStatus() {
   const state = await loadMasterState()
   const healthy = await isMasterHealthy()
 
-  console.log('\n=== Master Status ===\n')
-  console.log(
+  logger.userOutput('\n=== Master Status ===\n')
+  logger.userOutput(
     `Running: ${healthy ? 'Yes (PID: ' + (healthy ? getMasterPid() : 'N/A') + ')' : 'No'}`,
   )
-  console.log(`Mission: ${state.mission || 'Not set. Start with --mission <text>.'}`)
-  console.log(`Current Phase: ${state.currentPhase}`)
-  console.log(`Active Since: ${state.activeSince}`)
-  console.log(`Last Heartbeat: ${state.lastHeartbeat || 'Never'}`)
-  console.log(`Last Inspection: ${state.lastInspection || 'Never'}`)
+  logger.userOutput(`Mission: ${state.mission || 'Not set. Start with --mission <text>.'}`)
+  logger.userOutput(`Current Phase: ${state.currentPhase}`)
+  logger.userOutput(`Active Since: ${state.activeSince}`)
+  logger.userOutput(`Last Heartbeat: ${state.lastHeartbeat || 'Never'}`)
+  logger.userOutput(`Last Inspection: ${state.lastInspection || 'Never'}`)
 
   if (state.pendingQuestions.length > 0) {
-    console.log('\nPending Questions:')
+    logger.userOutput('\nPending Questions:')
     state.pendingQuestions.forEach((q) => {
-      console.log(`  [${q.id}] ${q.question}`)
+      logger.userOutput(`  [${q.id}] ${q.question}`)
     })
   }
 }
@@ -298,10 +301,10 @@ function getMasterPid(): string {
 async function printTasks() {
   const tasks = await loadTasks()
 
-  console.log('\n=== Current Tasks ===\n')
+  logger.userOutput('\n=== Current Tasks ===\n')
 
   if (tasks.length === 0) {
-    console.log('No tasks found.')
+    logger.userOutput('No tasks found.')
     return
   }
 
@@ -315,9 +318,9 @@ async function printTasks() {
   )
 
   for (const [status, statusTasks] of Object.entries(byStatus)) {
-    console.log(`\n[${status.toUpperCase()}] (${statusTasks.length})`)
+    logger.userOutput(`\n[${status.toUpperCase()}] (${statusTasks.length})`)
     statusTasks.forEach((t) => {
-      console.log(`  ${t.id} (p${t.priority}): ${t.description.slice(0, 60)}...`)
+      logger.userOutput(`  ${t.id} (p${t.priority}): ${t.description.slice(0, 60)}...`)
     })
   }
 }
@@ -325,21 +328,21 @@ async function printTasks() {
 async function printFailedTasks() {
   const failed = await loadFailedTasks()
 
-  console.log('\n=== Failed Tasks ===\n')
+  logger.userOutput('\n=== Failed Tasks ===\n')
 
   if (failed.length === 0) {
-    console.log('No failed tasks.')
+    logger.userOutput('No failed tasks.')
     return
   }
 
   failed.forEach((t) => {
-    console.log(`[${t.id}] Attempt ${t.attemptCount}/${t.maxAttempts}`)
-    console.log(`  ${t.description}`)
+    logger.userOutput(`[${t.id}] Attempt ${t.attemptCount}/${t.maxAttempts}`)
+    logger.userOutput(`  ${t.description}`)
     if (t.reviewHistory.length > 0) {
       const lastReview = t.reviewHistory[t.reviewHistory.length - 1]
-      console.log(`  Last review: ${lastReview.review.verdict} - ${lastReview.review.summary}`)
+      logger.userOutput(`  Last review: ${lastReview.review.verdict} - ${lastReview.review.summary}`)
     }
-    console.log('')
+    logger.userOutput('')
   })
 }
 
@@ -379,4 +382,4 @@ async function isMasterHealthy(): Promise<boolean> {
   }
 }
 
-main().catch(console.error)
+main().catch((error) => logger.error(String(error)))
