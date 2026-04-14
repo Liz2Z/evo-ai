@@ -34,10 +34,5 @@
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",
     "typescript": "^5.0.0"
-  },
-  "lint-staged": {
-    "*": [
-      "biome check --write --unsafe --no-errors-on-unmatched"
-    ]
   }
 }
