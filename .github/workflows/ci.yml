@@ -18,32 +18,33 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: ">=1.1.0"
+          bun-version: "1.2.0"
 
       - name: Get bun cache directory
         id: bun-cache-dir
-        run: echo "dir=$(bun pm cache rm -p && bun pm cache mkdir)" >> $GITHUB_OUTPUT
+        run: echo "dir=$(bun pm cache-dir)" >> $GITHUB_OUTPUT
 
       - name: Cache dependencies
+        id: cache-deps
         uses: actions/cache@v4
         with:
           path: |
             ${{ steps.bun-cache-dir.outputs.dir }}
             node_modules
-          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lockb') }}
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lockb') }}
           restore-keys: |
-            ${{ runner.os }}-bun-
+            bun-${{ runner.os }}-
+
+      - name: Cache hit status
+        run: echo "Cache hit or restore? ${{ steps.cache-deps.outputs.cache-hit }}"
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
       - name: Verify scripts exist
         run: |
-          bun run --help 2>/dev/null || true
-          echo "Checking required scripts..."
-          cat package.json | grep -q '"typecheck"' && echo "✓ typecheck exists" || echo "✗ typecheck missing"
-          cat package.json | grep -q '"lint"' && echo "✓ lint exists" || echo "✗ lint missing"
-          cat package.json | grep -q '"test"' && echo "✓ test exists" || echo "✗ test missing"
+          node -e "const p=require('./package.json'); ['typecheck','lint','test'].forEach(s=>{if(!p.scripts?.[s]) throw new Error(s+' missing')})"
+          echo "✓ All required scripts exist (typecheck, lint, test)"
 
       - name: Run type check
         run: bun run typecheck
