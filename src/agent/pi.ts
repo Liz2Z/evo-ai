@@ -41,8 +41,47 @@ function findModelAcrossProviders(modelId: string): Model<any> | null {
   return null
 }
 
+function inferProviderFromBaseUrl(baseUrl?: string): string | null {
+  if (!baseUrl) return null
+  const normalized = baseUrl.toLowerCase()
+  if (normalized.includes('/anthropic')) return 'anthropic'
+  if (normalized.includes('openrouter')) return 'openrouter'
+  if (normalized.includes('openai')) return 'openai'
+  if (
+    normalized.includes('zhipu') ||
+    normalized.includes('bigmodel') ||
+    normalized.includes('/zai')
+  ) {
+    return 'zai'
+  }
+  return null
+}
+
+function buildCustomProviderModel(
+  provider: string,
+  modelId: string,
+  baseUrl: string,
+): Model<any> | null {
+  const providerModels = getModels(provider as any)
+  const template = providerModels[0]
+  if (!template) return null
+  return {
+    ...template,
+    id: modelId,
+    name: modelId,
+    provider,
+    baseUrl,
+  }
+}
+
 export function resolvePiModel(modelId: string, baseUrl?: string): Model<any> {
   const normalized = modelId.trim()
+  const inferredProvider = inferProviderFromBaseUrl(baseUrl)
+  if (inferredProvider && baseUrl) {
+    const customModel = buildCustomProviderModel(inferredProvider, normalized, baseUrl)
+    if (customModel) return customModel
+  }
+
   let model: Model<any> | null = null
 
   if (normalized.includes(':')) {
@@ -72,14 +111,7 @@ export function resolvePiModel(modelId: string, baseUrl?: string): Model<any> {
     throw new Error(`Unsupported model id for pi-coding-agent: ${normalized}`)
   }
 
-  if (!baseUrl) {
-    return model
-  }
-
-  return {
-    ...model,
-    baseUrl,
-  }
+  return baseUrl ? { ...model, baseUrl } : model
 }
 
 export interface CreatePiSessionOptions {

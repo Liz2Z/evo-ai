@@ -105,7 +105,7 @@ export class DecisionEngine {
 
     // Check recent history for inspection
     const recentInspections = context.recentHistory.filter(
-      (h) => h.type === 'decision' && h.summary.includes('Inspection'),
+      (h) => h.type === 'decision' && h.summary.includes('launch_inspector'),
     )
 
     // Don't inspect too frequently

@@ -97,6 +97,12 @@ export function KanbanBoard({ emitter, master, maxConcurrency, onQuit }: KanbanB
     [master, cancel],
   )
 
+  const unansweredQuestions = (masterState?.pendingQuestions || []).filter(
+    (question) => !question.answered,
+  )
+  const pendingQuestions = unansweredQuestions.length
+  const primaryQuestion = unansweredQuestions[0]
+
   // Global key handling (only when input is NOT active)
   useInput((input, key) => {
     if (inputActive) return
@@ -111,6 +117,9 @@ export function KanbanBoard({ emitter, master, maxConcurrency, onQuit }: KanbanB
     if (key.escape) {
       setShowLogs(false)
     }
+    if (input === 'a' && primaryQuestion) {
+      activate(`/answer ${primaryQuestion.id} `)
+    }
   })
 
   // Calculate available height for main content
@@ -119,11 +128,6 @@ export function KanbanBoard({ emitter, master, maxConcurrency, onQuit }: KanbanB
   const fixedHeight = 3 + (lastMessage ? 1 : 0) + 3 // status + message + input
   const mainHeight = Math.max(8, termRows - fixedHeight)
 
-  const unansweredQuestions = (masterState?.pendingQuestions || []).filter(
-    (question) => !question.answered,
-  )
-  const pendingQuestions = unansweredQuestions.length
-  const primaryQuestion = unansweredQuestions[0]
   const questionPanelHeight = primaryQuestion ? 4 : 0
   const adjustedMainHeight = Math.max(8, mainHeight - questionPanelHeight)
 
@@ -139,19 +143,28 @@ export function KanbanBoard({ emitter, master, maxConcurrency, onQuit }: KanbanB
       />
 
       {primaryQuestion && (
-        <Box borderStyle="single" borderColor="red" paddingX={1}>
-          <Text bold color="red">
-            PENDING QUESTION
-          </Text>
-          <Text> </Text>
-          <Text>{primaryQuestion.question}</Text>
-          {primaryQuestion.options.length > 0 && (
-            <Text color="yellow"> | Options: {primaryQuestion.options.join(' / ')}</Text>
-          )}
-          <Text color="gray"> | Answer: /answer {primaryQuestion.id} &lt;你的回复&gt;</Text>
-          {unansweredQuestions.length > 1 && (
-            <Text color="gray"> | +{unansweredQuestions.length - 1} more</Text>
-          )}
+        <Box flexDirection="column" borderStyle="single" borderColor="red" paddingX={1}>
+          {/* Row 1: metadata - which phase + shortcuts */}
+          <Box>
+            <Text bold color="red">
+              PENDING{' '}
+            </Text>
+            {primaryQuestion.source && <Text color="gray">[{primaryQuestion.source}] </Text>}
+            <Text color="gray" wrap="truncate">
+              {`#${primaryQuestion.id.slice(-8)}`}
+              {unansweredQuestions.length > 1 ? ` | +${unansweredQuestions.length - 1} more` : ''}
+              {" | Press 'a' to answer"}
+            </Text>
+          </Box>
+          {/* Row 2: question text + options, truncated to one line */}
+          <Box>
+            <Text wrap="truncate">
+              {primaryQuestion.question}
+              {primaryQuestion.options.length > 0
+                ? ` [${primaryQuestion.options.join(' / ')}]`
+                : ''}
+            </Text>
+          </Box>
         </Box>
       )}
 

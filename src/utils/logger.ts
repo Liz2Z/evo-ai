@@ -1,10 +1,10 @@
 // Auto-generated
-import type { EventEmitter } from 'events'
-import { appendFile, mkdir } from 'fs/promises'
-import { join } from 'path'
+import type { EventEmitter } from 'node:events'
+import { appendFile, mkdir } from 'node:fs/promises'
+import { join } from 'node:path'
+import { getRuntimeDataDir } from '../runtime/paths'
 import type { LogEntry } from '../types'
 import type { LogMessageEvent } from '../types/events'
-import { getRuntimeDataDir } from '../runtime/paths'
 
 const MAX_BUFFER_SIZE = 500
 const LOGS_DIR = join(getRuntimeDataDir(), 'logs')
@@ -65,7 +65,7 @@ export class SlaveLogger {
   private async persistToFile(taskId: string, entry: LogEntry): Promise<void> {
     await this.ensureDir()
     const filePath = join(LOGS_DIR, `${taskId}.log`)
-    await appendFile(filePath, JSON.stringify(entry) + '\n')
+    await appendFile(filePath, `${JSON.stringify(entry)}\n`)
   }
 
   info(message: string): void {
@@ -146,12 +146,12 @@ export class Logger {
         await mkdir(LOGS_DIR, { recursive: true })
         this.initialized = true
       }
-      const line = JSON.stringify({
+      const line = `${JSON.stringify({
         timestamp: new Date().toISOString(),
         context: this.context,
         level,
         message,
-      }) + '\n'
+      })}\n`
       await appendFile(join(LOGS_DIR, `${this.context.toLowerCase()}.log`), line)
     } catch {
       // non-critical

@@ -7,7 +7,7 @@
   "models": {
     "lite": "glm-4.5-air",
     "pro": "glm-4.7",
-    "max": "glm-5"
+    "max": "glm-5.1"
   },
   "provider": {
     "baseUrl": "https://open.bigmodel.cn/api/anthropic"

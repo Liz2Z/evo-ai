@@ -9,6 +9,7 @@ import type { Config, ReviewResult, SlaveType, Task, TaskResult } from '../types
 import type { LogMessageEvent } from '../types/events'
 import { createWorktree, getChangedFiles, getDiff, removeWorktree } from '../utils/git'
 import type { SlaveLogger } from '../utils/logger'
+import { Logger } from '../utils/logger'
 import { addHistoryEntry, updateSlave } from '../utils/storage'
 
 const PROMPTS_DIR = join(import.meta.dir, 'prompts')
@@ -93,6 +94,7 @@ export interface SlaveOptions {
   baseBranch?: string
   logger?: SlaveLogger
   onLog?: (event: LogMessageEvent) => void
+  onError?: (error: unknown) => void
 }
 
 export class SlaveLauncher {
@@ -228,6 +230,7 @@ export class SlaveLauncher {
         return result
       }
     } catch (error) {
+      this.options.onError?.(error)
       this.log('error', `Slave ${this.slaveId} failed: ${error}`)
       await addHistoryEntry({
         timestamp: new Date().toISOString(),
@@ -422,6 +425,7 @@ export class SlaveLauncher {
 
 // Convenience functions
 export async function runInspector(mission: string, recentDecisions: string[]): Promise<Task[]> {
+  const logger = new Logger('Inspector')
   const inspectorTask: Task = {
     id: 'inspection',
     type: 'other',
@@ -440,6 +444,7 @@ export async function runInspector(mission: string, recentDecisions: string[]): 
     task: inspectorTask,
     mission,
     recentDecisions,
+    onError: (error) => logger.error(`Slave failed: ${error}`),
   })
 
   await launcher.start()
@@ -447,9 +452,14 @@ export async function runInspector(mission: string, recentDecisions: string[]): 
 
   // Parse tasks from inspector output
   if (result && 'summary' in result) {
+    const raw = result.summary
+    logger.info(
+      `raw output (${raw.length} chars): ${raw.slice(0, 500)}${raw.length > 500 ? '...' : ''}`,
+    )
     try {
-      const parsed = JSON.parse(result.summary)
+      const parsed = JSON.parse(raw)
       if (Array.isArray(parsed.tasks)) {
+        logger.info(`parsed ${parsed.tasks.length} task(s)`)
         return parsed.tasks.map((t: Partial<Task>) => ({
           id: generateTaskId(),
           type: t.type || 'other',
@@ -464,13 +474,15 @@ export async function runInspector(mission: string, recentDecisions: string[]): 
           reviewHistory: [],
         }))
       }
-    } catch {
+    } catch (e) {
+      logger.error(`JSON.parse failed (${e}), trying regex fallback`)
       // Try to find tasks in the raw output
-      const taskMatch = result.summary.match(/"tasks"\s*:\s*\[[\s\S]*?\]/)
+      const taskMatch = raw.match(/"tasks"\s*:\s*\[[\s\S]*?\]/)
       if (taskMatch) {
         try {
           const tasksJson = JSON.parse(`{${taskMatch[0]}}`)
           if (Array.isArray(tasksJson.tasks)) {
+            logger.info(`regex fallback parsed ${tasksJson.tasks.length} task(s)`)
             return tasksJson.tasks.map((t: Partial<Task>) => ({
               id: generateTaskId(),
               type: t.type || 'other',
@@ -486,13 +498,37 @@ export async function runInspector(mission: string, recentDecisions: string[]): 
             }))
           }
         } catch {
-          // Not valid JSON
+          logger.error('regex fallback JSON.parse also failed')
         }
+      } else {
+        logger.error('no "tasks" key found in output')
       }
     }
   }
 
-  return []
+  logger.info(`returning 0 tasks (result=${result ? 'present' : 'null'})`)
+  const trimmedMission = mission.trim()
+  if (!trimmedMission) {
+    return []
+  }
+
+  logger.warn('using fallback inspection task because inspector output is empty/invalid')
+  return [
+    {
+      id: generateTaskId(),
+      type: 'other',
+      status: 'pending',
+      priority: 5,
+      description: `执行主任务目标：${trimmedMission.slice(0, 120)}`,
+      context:
+        'Inspector 回退任务：模型未返回可解析的 tasks JSON。请先落地一个最小可交付结果，再拆分后续子任务。',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      attemptCount: 0,
+      maxAttempts: 3,
+      reviewHistory: [],
+    },
+  ]
 }
 
 export async function runWorker(

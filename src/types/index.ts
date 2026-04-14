@@ -95,6 +95,7 @@ export interface Question {
   createdAt: string
   answered?: boolean
   answer?: string
+  source?: string // which phase/context triggered this question
 }
 
 // History entry

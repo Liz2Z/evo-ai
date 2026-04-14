@@ -68,7 +68,9 @@ export function InputBar({
   if (!active) {
     return (
       <Box borderStyle="single" borderColor="gray" paddingX={1}>
-        <Text color="gray">Press ':' to enter command, or 'q' to quit</Text>
+        <Text color="gray">
+          Press ':' to enter command, 'a' to answer pending question, or 'q' to quit
+        </Text>
       </Box>
     )
   }
@@ -110,9 +112,9 @@ export function useInputBar() {
   const [inputActive, setInputActive] = useState(false)
   const [inputValue, setInputValue] = useState('')
 
-  const activate = useCallback(() => {
+  const activate = useCallback((initialValue = '') => {
     setInputActive(true)
-    setInputValue('')
+    setInputValue(initialValue)
   }, [])
 
   const cancel = useCallback(() => {
