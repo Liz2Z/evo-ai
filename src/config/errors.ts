@@ -1,4 +1,3 @@
-// Auto-generated
 export class ConfigError extends Error {
   constructor(message = '配置错误') {
     super(message)

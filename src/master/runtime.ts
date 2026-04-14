@@ -1,5 +1,3 @@
-// Auto-generated
-
 import { Type } from '@mariozechner/pi-ai'
 import { defineTool, type ToolDefinition } from '@mariozechner/pi-coding-agent'
 import { createPiSession } from '../agent/pi'

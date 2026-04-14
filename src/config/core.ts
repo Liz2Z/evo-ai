@@ -1,11 +1,10 @@
-// Auto-generated
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { xdgConfig } from 'xdg-basedir'
 import type { z } from 'zod'
+import { Logger } from '../utils/logger'
 import { expandEnvVarsInObject } from './env'
 import { ConfigError, ValidationError } from './errors'
-import { Logger } from '../utils/logger'
 
 type ZodObjectLike = z.ZodObject<any>
 type Infer<T extends ZodObjectLike> = z.infer<T>
@@ -153,7 +152,7 @@ export class Settings<T extends ZodObjectLike> {
   }
 
   private getPaths() {
-    const configDir = xdgConfig || join(require('os').homedir(), '.config')
+    const configDir = xdgConfig || join(require('node:os').homedir(), '.config')
     const appDirName = `.${this.appName}`
 
     const globalSettingsPath = this.options.globalPath ?? join(configDir, appDirName, 'config.json')

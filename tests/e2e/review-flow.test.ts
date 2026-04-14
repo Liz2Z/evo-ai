@@ -1,8 +1,6 @@
-// Auto-generated
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { runReviewer, runWorker, SlaveLauncher } from '../../src/slave/launcher'
+import { runReviewer, runWorker } from '../../src/slave/launcher'
 import { deleteBranch, getDiff, removeWorktree } from '../../src/utils/git'
-import { addTask, loadTasks, updateTask } from '../../src/utils/storage'
 import {
   assertReviewResult,
   assertTaskResult,
@@ -45,13 +43,13 @@ describe('Review 流程', () => {
 
       expect(workerResult).not.toBeNull()
       assertTaskResult(workerResult)
-      expect(workerResult!.worktree).toBeTruthy()
-      expect(workerResult!.branch).toBeTruthy()
+      expect(workerResult?.worktree).toBeTruthy()
+      expect(workerResult?.branch).toBeTruthy()
 
       // 2. 获取 diff
-      let diff = workerResult!.diff
-      if (!diff && workerResult!.worktree && workerResult!.branch) {
-        diff = await getDiff(workerResult!.branch, baseBranch, workerResult!.worktree)
+      let diff = workerResult?.diff
+      if (!diff && workerResult?.worktree && workerResult?.branch) {
+        diff = await getDiff(workerResult?.branch, baseBranch, workerResult?.worktree)
       }
 
       // 3. Reviewer 审查
@@ -60,15 +58,15 @@ describe('Review 流程', () => {
 
         expect(reviewResult).not.toBeNull()
         assertReviewResult(reviewResult)
-        expect(['approve', 'request_changes', 'reject']).toContain(reviewResult!.verdict)
+        expect(['approve', 'request_changes', 'reject']).toContain(reviewResult?.verdict)
       }
 
       // 4. 清理
-      if (workerResult!.worktree) {
-        await removeWorktree(workerResult!.worktree).catch(() => {})
+      if (workerResult?.worktree) {
+        await removeWorktree(workerResult?.worktree).catch(() => {})
       }
-      if (workerResult!.branch) {
-        await deleteBranch(workerResult!.branch).catch(() => {})
+      if (workerResult?.branch) {
+        await deleteBranch(workerResult?.branch).catch(() => {})
       }
     },
     E2E_TIMEOUT * 2,
@@ -107,7 +105,7 @@ index 0000000..abc1234
 
       expect(result).not.toBeNull()
       assertReviewResult(result)
-      expect(result!.confidence).toBeGreaterThan(0)
+      expect(result?.confidence).toBeGreaterThan(0)
     },
     E2E_TIMEOUT,
   )
@@ -135,7 +133,7 @@ index 1234567..abcdefg 100644
 
       expect(result).not.toBeNull()
       assertReviewResult(result)
-      expect(result!.summary).toBeDefined()
+      expect(result?.summary).toBeDefined()
     },
     E2E_TIMEOUT,
   )

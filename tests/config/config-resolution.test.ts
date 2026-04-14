@@ -1,9 +1,8 @@
-// Auto-generated
 import { afterEach, describe, expect, test } from 'bun:test'
-import { existsSync } from 'fs'
-import { mkdir, rm, writeFile } from 'fs/promises'
-import { tmpdir } from 'os'
-import { join } from 'path'
+import { existsSync } from 'node:fs'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Settings } from '../../src/config/core'
 import { configSchema } from '../../src/config/schemas'
 import { getRuntimeDataDir } from '../../src/runtime/paths'

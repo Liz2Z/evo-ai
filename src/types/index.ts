@@ -1,4 +1,3 @@
-// Auto-generated
 export type TaskStatus =
   | 'pending'
   | 'assigned'

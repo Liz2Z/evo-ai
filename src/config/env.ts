@@ -1,4 +1,3 @@
-// Auto-generated
 import { CredentialsError } from './errors'
 
 const ENV_VAR_PATTERN = /\$\{([^}:]+)(?::-([^}]*))?\}/g

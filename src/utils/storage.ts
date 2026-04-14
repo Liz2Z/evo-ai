@@ -1,9 +1,7 @@
-// Auto-generated
-
-import { EventEmitter } from 'events'
-import { existsSync } from 'fs'
-import { appendFile, mkdir } from 'fs/promises'
-import { dirname, join } from 'path'
+import { EventEmitter } from 'node:events'
+import { existsSync } from 'node:fs'
+import { appendFile, mkdir } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import { getRuntimeDataDir } from '../runtime/paths'
 import type { HistoryEntry, MasterState, PersistedEvent, Question, SlaveInfo, Task } from '../types'
 
@@ -40,7 +38,7 @@ async function appendEvent(
     payload,
   }
   const filepath = join(eventsDir, `${todayKey()}.ndjson`)
-  await appendFile(filepath, JSON.stringify(event) + '\n')
+  await appendFile(filepath, `${JSON.stringify(event)}\n`)
 }
 
 function emitProjectionUpdated(scope: string, entityId?: string): void {

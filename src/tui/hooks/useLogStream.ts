@@ -1,6 +1,4 @@
-// Auto-generated
-
-import type { EventEmitter } from 'events'
+import type { EventEmitter } from 'node:events'
 import { useEffect, useState } from 'react'
 import type { LogEntry } from '../../types'
 import type { LogMessageEvent } from '../../types/events'
@@ -19,7 +17,7 @@ export function useLogStream(
 ): LogEntry[] {
   const [entries, setEntries] = useState<LogEntry[]>([])
   const normalizedSlaveIds = normalizeSlaveIds(slaveIds)
-  const slaveIdKey = normalizedSlaveIds?.join(',') || '*'
+  const _slaveIdKey = normalizedSlaveIds?.join(',') || '*'
 
   useEffect(() => {
     let disposed = false
@@ -68,7 +66,7 @@ export function useLogStream(
       disposed = true
       emitter.off('log:message', onLogMessage)
     }
-  }, [emitter, taskId, slaveIdKey])
+  }, [emitter, taskId, normalizedSlaveIds])
 
   return entries
 }

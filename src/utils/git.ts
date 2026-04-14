@@ -1,6 +1,4 @@
-// Auto-generated
-import { existsSync } from 'fs'
-import { join } from 'path'
+import { join } from 'node:path'
 import type { Task } from '../types'
 
 export async function runGit(

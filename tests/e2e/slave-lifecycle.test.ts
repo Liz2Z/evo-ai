@@ -1,10 +1,8 @@
-// Auto-generated
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { existsSync } from 'fs'
-import { join } from 'path'
+import { existsSync } from 'node:fs'
 import { runInspector, runReviewer, runWorker, SlaveLauncher } from '../../src/slave/launcher'
 import { deleteBranch, removeWorktree } from '../../src/utils/git'
-import { loadSlaves, loadTasks } from '../../src/utils/storage'
+import { loadSlaves } from '../../src/utils/storage'
 import {
   assertReviewResult,
   assertTaskResult,
@@ -61,16 +59,16 @@ describe('Slave 生命周期', () => {
       // 验证结果
       expect(result).not.toBeNull()
       assertTaskResult(result)
-      expect(result!.taskId).toBe(task.id)
+      expect(result?.taskId).toBe(task.id)
 
       // Worker 应该创建了 worktree
-      if (result!.worktree && existsSync(result!.worktree)) {
-        expect(result!.branch).toBeTruthy()
+      if (result?.worktree && existsSync(result?.worktree)) {
+        expect(result?.branch).toBeTruthy()
 
         // 清理 worktree 和分支
-        await removeWorktree(result!.worktree).catch(() => {})
-        if (result!.branch) {
-          await deleteBranch(result!.branch).catch(() => {})
+        await removeWorktree(result?.worktree).catch(() => {})
+        if (result?.branch) {
+          await deleteBranch(result?.branch).catch(() => {})
         }
       }
     },
@@ -95,10 +93,10 @@ index 1234567..abcdefg 100644
       // 验证结果
       expect(result).not.toBeNull()
       assertReviewResult(result)
-      expect(result!.taskId).toBe(task.id)
-      expect(['approve', 'request_changes', 'reject']).toContain(result!.verdict)
-      expect(result!.confidence).toBeGreaterThanOrEqual(0)
-      expect(result!.confidence).toBeLessThanOrEqual(1)
+      expect(result?.taskId).toBe(task.id)
+      expect(['approve', 'request_changes', 'reject']).toContain(result?.verdict)
+      expect(result?.confidence).toBeGreaterThanOrEqual(0)
+      expect(result?.confidence).toBeLessThanOrEqual(1)
     },
     E2E_TIMEOUT,
   )
@@ -120,8 +118,8 @@ index 1234567..abcdefg 100644
     const slaves = await loadSlaves()
     const found = slaves.find((s) => s.id === slaveId)
     expect(found).toBeDefined()
-    expect(found!.status).toBe('busy')
-    expect(found!.currentTask).toBe(task.id)
+    expect(found?.status).toBe('busy')
+    expect(found?.currentTask).toBe(task.id)
 
     // 清理（不执行，直接取消）
     await launcher.cancel()
@@ -144,8 +142,8 @@ index 1234567..abcdefg 100644
     const slaves = await loadSlaves()
     const found = slaves.find((s) => s.id === slaveId)
     expect(found).toBeDefined()
-    expect(found!.status).toBe('idle')
-    expect(found!.currentTask).toBeUndefined()
+    expect(found?.status).toBe('idle')
+    expect(found?.currentTask).toBeUndefined()
   })
 
   test(
@@ -168,7 +166,7 @@ index 1234567..abcdefg 100644
       const slaves = await loadSlaves()
       const found = slaves.find((s) => s.id === slaveId)
       expect(found).toBeDefined()
-      expect(found!.status).toBe('idle')
+      expect(found?.status).toBe('idle')
 
       // 清理可能留下的 worktree
       if (result && 'worktree' in result && result.worktree) {

@@ -1,4 +1,3 @@
-// Auto-generated
 import type {
   MasterRuntimeMode,
   MasterState,

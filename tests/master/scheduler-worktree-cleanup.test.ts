@@ -1,9 +1,8 @@
-// Auto-generated
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { existsSync } from 'fs'
-import { mkdir, rm, writeFile } from 'fs/promises'
-import { tmpdir } from 'os'
-import { join } from 'path'
+import { existsSync } from 'node:fs'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { Config, ReviewResult, Task } from '../../src/types'
 import { createWorktree, deleteBranch, removeWorktree } from '../../src/utils/git'
 import { createTestTask } from '../e2e/helpers'
@@ -50,7 +49,6 @@ beforeAll(async () => {
   runCmd('git', ['commit', '-m', 'Initial commit'], repoDir)
 
   process.chdir(repoDir)
-
   ;({ Master: MasterClass } = await import('../../src/master/scheduler'))
   ;({
     addTask: addTaskFn,

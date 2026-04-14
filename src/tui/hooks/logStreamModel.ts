@@ -1,6 +1,5 @@
-// Auto-generated
-import { readFile } from 'fs/promises'
-import { join } from 'path'
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import type { LogEntry } from '../../types'
 import { getGlobalLogBuffer } from '../../utils/logger'
 

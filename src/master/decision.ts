@@ -1,4 +1,3 @@
-// Auto-generated
 import type { HistoryEntry, Task } from '../types'
 
 export interface DecisionContext {

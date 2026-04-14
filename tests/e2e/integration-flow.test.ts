@@ -1,10 +1,8 @@
-// Auto-generated
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { existsSync } from 'fs'
-import { join } from 'path'
+import { existsSync } from 'node:fs'
 import { runInspector, runReviewer, runWorker } from '../../src/slave/launcher'
 import { deleteBranch, getDiff, mergeBranch, removeWorktree } from '../../src/utils/git'
-import { addTask, loadSlaves, loadTasks, updateTask } from '../../src/utils/storage'
+import { addTask, loadTasks, updateTask } from '../../src/utils/storage'
 import {
   assertReviewResult,
   assertTaskResult,
@@ -66,14 +64,14 @@ describe('完整集成流程', () => {
       // 3. 更新任务状态为 reviewing
       await updateTask(task.id, {
         status: 'reviewing',
-        worktree: workerResult!.worktree,
-        branch: workerResult!.branch,
+        worktree: workerResult?.worktree,
+        branch: workerResult?.branch,
       })
 
       // 4. 获取 diff
-      let diff = workerResult!.diff
-      if (!diff && workerResult!.worktree && workerResult!.branch) {
-        diff = await getDiff(workerResult!.branch, baseBranch, workerResult!.worktree)
+      let diff = workerResult?.diff
+      if (!diff && workerResult?.worktree && workerResult?.branch) {
+        diff = await getDiff(workerResult?.branch, baseBranch, workerResult?.worktree)
       }
 
       // 5. Reviewer 审查
@@ -84,7 +82,7 @@ describe('完整集成流程', () => {
         expect(reviewResult).not.toBeNull()
         assertReviewResult(reviewResult)
 
-        if (reviewResult!.verdict === 'approve') {
+        if (reviewResult?.verdict === 'approve') {
           reviewPassed = true
           await updateTask(task.id, { status: 'approved' })
         } else {
@@ -93,24 +91,24 @@ describe('完整集成流程', () => {
       }
 
       // 6. 如果 review 通过，尝试合并
-      if (reviewPassed && workerResult!.branch) {
-        if (workerResult!.worktree) {
-          await removeWorktree(workerResult!.worktree).catch(() => {})
+      if (reviewPassed && workerResult?.branch) {
+        if (workerResult?.worktree) {
+          await removeWorktree(workerResult?.worktree).catch(() => {})
         }
-        const mergeResult = await mergeBranch(workerResult!.branch, baseBranch)
+        const mergeResult = await mergeBranch(workerResult?.branch, baseBranch)
         if (mergeResult.success) {
           await updateTask(task.id, { status: 'completed' })
-          await deleteBranch(workerResult!.branch).catch(() => {})
+          await deleteBranch(workerResult?.branch).catch(() => {})
         }
       } else {
-        await cleanupWorktree(workerResult!.worktree, workerResult!.branch)
+        await cleanupWorktree(workerResult?.worktree, workerResult?.branch)
       }
 
       // 7. 验证最终状态
       tasks = await loadTasks()
       const finalTask = tasks.find((t) => t.id === task.id)
       expect(finalTask).toBeDefined()
-      expect(['completed', 'approved', 'pending', 'reviewing']).toContain(finalTask!.status)
+      expect(['completed', 'approved', 'pending', 'reviewing']).toContain(finalTask?.status)
     },
     E2E_TIMEOUT * 3,
   ) // Worker + Reviewer + merge 可能很慢
@@ -134,8 +132,8 @@ describe('完整集成流程', () => {
         assertTaskResult(result)
 
         // 清理
-        if (result!.worktree) {
-          await cleanupWorktree(result!.worktree, result!.branch)
+        if (result?.worktree) {
+          await cleanupWorktree(result?.worktree, result?.branch)
         }
       }
     },
@@ -164,9 +162,9 @@ describe('完整集成流程', () => {
       assertTaskResult(firstResult)
 
       // 2. 获取 diff 并 review
-      let diff = firstResult!.diff
-      if (!diff && firstResult!.worktree && firstResult!.branch) {
-        diff = await getDiff(firstResult!.branch, baseBranch, firstResult!.worktree)
+      let diff = firstResult?.diff
+      if (!diff && firstResult?.worktree && firstResult?.branch) {
+        diff = await getDiff(firstResult?.branch, baseBranch, firstResult?.worktree)
       }
 
       if (diff) {
@@ -190,8 +188,8 @@ describe('完整集成流程', () => {
       }
 
       // 清理
-      if (firstResult!.worktree) {
-        await cleanupWorktree(firstResult!.worktree, firstResult!.branch)
+      if (firstResult?.worktree) {
+        await cleanupWorktree(firstResult?.worktree, firstResult?.branch)
       }
     },
     E2E_TIMEOUT * 2,

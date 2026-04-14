@@ -1,4 +1,3 @@
-// Auto-generated
 import { z } from 'zod'
 
 export const modelTierConfigSchema = z.object({

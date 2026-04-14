@@ -1,4 +1,3 @@
-// Auto-generated
 import type { ReviewResult, Task, TaskResult } from '../../src/types'
 
 /**
@@ -27,7 +26,7 @@ export function createTestTask(overrides: Partial<Task> = {}): Task {
 export function createSimpleWorkTask(workdir: string): Task {
   return createTestTask({
     type: 'fix',
-    description: `Add a comment "// Auto-generated" at the top of any .ts file in the project. If no .ts files exist, create src/index.ts with that comment.`,
+    description: `update "TODO"`,
     context: `Working directory: ${workdir}`,
   })
 }

@@ -1,15 +1,15 @@
 #!/usr/bin/env bun
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
-// Auto-generated
-import { parseArgs } from 'util'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+
+import { parseArgs } from 'node:util'
 import { settings } from './config'
 
 import { Master } from './master/scheduler'
-import { Logger } from './utils/logger'
 import { getControlFilePath, getHealthFilePath, getRuntimeDataDir } from './runtime/paths'
 import { startTUI } from './tui/index'
 import type { Task } from './types'
 import { branchExists, isGitRepo } from './utils/git'
+import { Logger } from './utils/logger'
 import { answerQuestion, loadFailedTasks, loadMasterState, loadTasks } from './utils/storage'
 
 const logger = new Logger('CLI')
@@ -130,16 +130,16 @@ async function main() {
   const concurrency = getString(values.concurrency)
 
   if (interval) {
-    const parsed = parseInt(interval)
-    if (isNaN(parsed) || parsed < 1) {
+    const parsed = parseInt(interval, 10)
+    if (Number.isNaN(parsed) || parsed < 1) {
       logger.userError('Error: --interval must be a positive number (seconds).')
       process.exit(1)
     }
     config.heartbeatInterval = parsed * 1000
   }
   if (concurrency) {
-    const parsed = parseInt(concurrency)
-    if (isNaN(parsed) || parsed < 1 || parsed > 20) {
+    const parsed = parseInt(concurrency, 10)
+    if (Number.isNaN(parsed) || parsed < 1 || parsed > 20) {
       logger.userError('Error: --concurrency must be between 1 and 20.')
       process.exit(1)
     }
@@ -272,9 +272,7 @@ async function printStatus() {
   const healthy = await isMasterHealthy()
 
   logger.userOutput('\n=== Master Status ===\n')
-  logger.userOutput(
-    `Running: ${healthy ? 'Yes (PID: ' + (healthy ? getMasterPid() : 'N/A') + ')' : 'No'}`,
-  )
+  logger.userOutput(`Running: ${healthy ? `Yes (PID: ${healthy ? getMasterPid() : 'N/A'})` : 'No'}`)
   logger.userOutput(`Mission: ${state.mission || 'Not set. Start with --mission <text>.'}`)
   logger.userOutput(`Current Phase: ${state.currentPhase}`)
   logger.userOutput(`Active Since: ${state.activeSince}`)
@@ -340,7 +338,9 @@ async function printFailedTasks() {
     logger.userOutput(`  ${t.description}`)
     if (t.reviewHistory.length > 0) {
       const lastReview = t.reviewHistory[t.reviewHistory.length - 1]
-      logger.userOutput(`  Last review: ${lastReview.review.verdict} - ${lastReview.review.summary}`)
+      logger.userOutput(
+        `  Last review: ${lastReview.review.verdict} - ${lastReview.review.summary}`,
+      )
     }
     logger.userOutput('')
   })
