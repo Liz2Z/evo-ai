@@ -1,8 +1,9 @@
 // Auto-generated
 
-import { query } from '@anthropic-ai/claude-agent-sdk'
-import { readFileSync } from 'fs'
-import { join, resolve } from 'path'
+import { readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+import { createCodingTools, createReadOnlyTools } from '@mariozechner/pi-coding-agent'
+import { createPiSession } from '../agent/pi'
 import { getConfiguredModel, settings } from '../config'
 import type { Config, ReviewResult, SlaveType, Task, TaskResult } from '../types'
 import type { LogMessageEvent } from '../types/events'
@@ -46,24 +47,6 @@ class RateLimiter {
 }
 
 const apiLimiter = new RateLimiter(2, 2000) // Max 2 concurrent, 2s between calls
-
-// Type for query options
-interface QueryOptions {
-  systemPrompt?: string
-  cwd: string
-  env: Record<string, string | undefined>
-  permissionMode: 'bypassPermissions'
-  allowDangerouslySkipPermissions: boolean
-  maxTurns: number
-  model?: string
-}
-
-// Type for error message
-interface ErrorMessage {
-  type: string
-  subtype: string
-  errors?: string[]
-}
 
 function loadPrompt(type: SlaveType): string {
   const filename = `${type}.md`
@@ -200,7 +183,7 @@ export class SlaveLauncher {
         }
       }
 
-      // Execute using Claude Agent SDK
+      // Execute using pi-coding-agent SDK
       this.log('info', `Starting ${this.type} slave ${this.slaveId}...`)
 
       const workingDir = this.worktreePath || this.options.worktreePath || process.cwd()
@@ -213,39 +196,18 @@ export class SlaveLauncher {
       let output = ''
       try {
         this.log('info', `Calling model for ${this.type} task`)
-        const q = query({
-          prompt: taskPrompt,
-          options: {
-            systemPrompt: fullSystemPrompt,
-            cwd: resolve(workingDir),
-            env: {
-              ...(process.env as Record<string, string | undefined>),
-              ANTHROPIC_API_KEY: config.provider?.apiKey,
-              ANTHROPIC_BASE_URL: config.provider?.baseUrl,
-            },
-            ...(slaveModel ? { model: slaveModel } : {}),
-            permissionMode: 'bypassPermissions',
-            allowDangerouslySkipPermissions: true,
-            maxTurns: this.type === 'inspector' ? 12 : this.type === 'reviewer' ? 30 : 60,
-          },
+        const modelId = slaveModel || config.models.pro
+        const cwd = resolve(workingDir)
+        const tools = this.type === 'worker' ? createCodingTools(cwd) : createReadOnlyTools(cwd)
+        const { session } = await createPiSession({
+          cwd,
+          config,
+          modelId,
+          tools,
         })
 
-        for await (const message of q) {
-          if (message.type === 'result') {
-            if (message.subtype === 'success') {
-              output = message.result
-            } else {
-              const errorMsg = message as ErrorMessage
-              const errMsg = errorMsg.errors?.join('; ') || 'Unknown error'
-              this.log('error', `Slave ${this.slaveId} error: ${errMsg}`)
-              output = JSON.stringify({
-                status: 'failed',
-                summary: errMsg,
-                filesChanged: [],
-              })
-            }
-          }
-        }
+        await session.prompt(`${fullSystemPrompt}\n\n${taskPrompt}`)
+        output = session.getLastAssistantText() || ''
       } finally {
         apiLimiter.release()
       }
@@ -436,33 +398,17 @@ export class SlaveLauncher {
 
     await apiLimiter.acquire()
     try {
-      const queryOptions: QueryOptions = {
-        cwd: resolve(process.cwd()),
-        env: {
-          ...(process.env as Record<string, string | undefined>),
-          ANTHROPIC_API_KEY: settings.provider.get().apiKey,
-          ANTHROPIC_BASE_URL: settings.provider.get().baseUrl,
-        },
-        permissionMode: 'bypassPermissions',
-        allowDangerouslySkipPermissions: true,
-        maxTurns: 1,
-      }
+      const runConfig = settings.get()
       const titleModel = getConfiguredModel(config, 'taskTitle')
-      if (titleModel) {
-        queryOptions.model = titleModel
-      }
-
-      const q = query({
-        prompt,
-        options: queryOptions,
+      const { session } = await createPiSession({
+        cwd: resolve(process.cwd()),
+        config: runConfig,
+        modelId: titleModel || config.models.lite,
+        tools: [],
       })
 
-      let output = ''
-      for await (const message of q) {
-        if (message.type === 'result' && message.subtype === 'success') {
-          output = message.result
-        }
-      }
+      await session.prompt(prompt)
+      const output = session.getLastAssistantText() || ''
 
       const slug = sanitizeModelTitle(output.trim().split('\n')[0] || '')
       return slug || fallbackTitleFromTask(this.task)
