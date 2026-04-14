@@ -13,7 +13,11 @@
     "test:worktree": "NODE_ENV=test bun test tests/e2e/worktree.test.ts",
     "test:slave": "NODE_ENV=test bun test tests/e2e/slave-lifecycle.test.ts",
     "test:review": "NODE_ENV=test bun test tests/e2e/review-flow.test.ts",
-    "test:integration": "NODE_ENV=test bun test tests/e2e/integration-flow.test.ts"
+    "test:integration": "NODE_ENV=test bun test tests/e2e/integration-flow.test.ts",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "check": "biome check --write ."
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.86",
@@ -23,6 +27,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.3.14",
     "@types/bun": "latest",
     "@types/react": "^19.2.14",
     "typescript": "^5.0.0"

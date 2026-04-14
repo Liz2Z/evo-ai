@@ -1,13 +1,13 @@
-import React from 'react';
-import { render } from 'ink';
-import type { Master } from '../master/scheduler';
-import { KanbanBoard } from './components/KanbanBoard';
+import { render } from 'ink'
+import React from 'react'
+import type { Master } from '../master/scheduler'
+import { KanbanBoard } from './components/KanbanBoard'
 
 interface TUIOptions {
-  emitter: Master | null;
-  master: Master | null;
-  maxConcurrency: number;
-  onQuit: () => void;
+  emitter: Master | null
+  master: Master | null
+  maxConcurrency: number
+  onQuit: () => void
 }
 
 export function startTUI({ emitter, master, maxConcurrency, onQuit }: TUIOptions) {
@@ -18,9 +18,9 @@ export function startTUI({ emitter, master, maxConcurrency, onQuit }: TUIOptions
       maxConcurrency={maxConcurrency}
       onQuit={onQuit}
     />
-  );
+  )
 
-  const instance = render(<App />);
+  const instance = render(<App />)
 
-  return instance;
+  return instance
 }
