@@ -4,9 +4,10 @@ import { appendFile, mkdir } from 'fs/promises'
 import { join } from 'path'
 import type { LogEntry } from '../types'
 import type { LogMessageEvent } from '../types/events'
+import { getRuntimeDataDir } from '../runtime/paths'
 
 const MAX_BUFFER_SIZE = 500
-const LOGS_DIR = join(process.cwd(), 'data', 'logs')
+const LOGS_DIR = join(getRuntimeDataDir(), 'logs')
 
 export class SlaveLogger {
   private buffers: Map<string, LogEntry[]> = new Map()
@@ -128,32 +129,58 @@ export function addToGlobalBuffer(taskId: string, entry: LogEntry): void {
  */
 export class Logger {
   private readonly context: string
+  private initialized = false
 
   constructor(context: string) {
     this.context = context
   }
 
-  private formatMessage(message: string): string {
+  private formatMessage(level: string, message: string): string {
     const timestamp = new Date().toISOString().split('T')[1].slice(0, -1)
-    return `[${timestamp}] [${this.context}] ${message}`
+    return `[${timestamp}] [${this.context}] [${level}] ${message}`
+  }
+
+  private async persistToFile(level: string, message: string): Promise<void> {
+    try {
+      if (!this.initialized) {
+        await mkdir(LOGS_DIR, { recursive: true })
+        this.initialized = true
+      }
+      const line = JSON.stringify({
+        timestamp: new Date().toISOString(),
+        context: this.context,
+        level,
+        message,
+      }) + '\n'
+      await appendFile(join(LOGS_DIR, `${this.context.toLowerCase()}.log`), line)
+    } catch {
+      // non-critical
+    }
   }
 
   info(message: string): void {
-    console.log(this.formatMessage(message))
+    const formatted = this.formatMessage('INFO', message)
+    console.log(formatted)
+    void this.persistToFile('info', message)
   }
 
   error(message: string): void {
-    console.error(this.formatMessage(message))
+    const formatted = this.formatMessage('ERROR', message)
+    console.error(formatted)
+    void this.persistToFile('error', message)
   }
 
   warn(message: string): void {
-    console.warn(this.formatMessage(message))
+    const formatted = this.formatMessage('WARN', message)
+    console.warn(formatted)
+    void this.persistToFile('warn', message)
   }
 
   debug(message: string): void {
     if (process.env.DEBUG) {
-      console.log(this.formatMessage(message))
+      console.log(this.formatMessage('DEBUG', message))
     }
+    void this.persistToFile('debug', message)
   }
 
   /**
