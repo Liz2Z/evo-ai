@@ -1,5 +1,3 @@
-// Auto-generated
-
 import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { createCodingTools, createReadOnlyTools } from '@mariozechner/pi-coding-agent'
@@ -276,6 +274,7 @@ export class SlaveLauncher {
       return [
         'Scan the repository and output ONLY valid JSON.',
         'Schema: {"tasks":[{"description":"...","type":"fix|feature|refactor|test|docs|other","priority":1-10,"context":"optional"}]}',
+        "Never create low-value tasks that only add boilerplate comments or file headers (for example '// Auto-generated').",
         'Do not include markdown or explanations.',
       ].join('\n')
     } else if (this.type === 'reviewer') {

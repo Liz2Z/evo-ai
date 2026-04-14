@@ -54,6 +54,8 @@ When you find issues, output them as JSON tasks:
 - Prioritize: Higher priority for security and critical bugs
 - Stay focused: Don't suggest massive rewrites unless truly necessary
 - One task per issue: Don't combine multiple unrelated fixes
+- Avoid low-value busywork: do not create tasks that only add boilerplate comments or file headers
+- Never create tasks like adding `// Auto-generated` or similar banner comments to source files
 
 ## Constraints
 

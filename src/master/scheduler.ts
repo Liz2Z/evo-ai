@@ -1,4 +1,3 @@
-// Auto-generated
 import { EventEmitter } from 'node:events'
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { getControlFilePath, getHealthFilePath } from '../runtime/paths'
@@ -32,6 +31,7 @@ import {
   type ReviewerAssignmentResult,
   type WorkerAssignmentResult,
 } from './runtime'
+import { sanitizeInspectorTasks } from './task-sanitizer'
 
 interface MasterOptions {
   runtimeFactory?: (config: Config, state: MasterState) => MasterRuntime
@@ -531,8 +531,10 @@ export class Master extends EventEmitter {
 
     void runInspector(this.state.mission, recentDecisions)
       .then(async (newTasks) => {
+        const existingTasks = await loadTasks()
+        const { accepted, dropped } = sanitizeInspectorTasks(newTasks, existingTasks)
         const createdTaskIds: string[] = []
-        for (const task of newTasks) {
+        for (const task of accepted) {
           await addTask(task)
           createdTaskIds.push(task.id)
           await addHistoryEntry({
@@ -542,8 +544,15 @@ export class Master extends EventEmitter {
             summary: `Inspector created task: ${task.description.slice(0, 100)}`,
           })
         }
+
+        for (const item of dropped) {
+          this.logger.info(
+            `Dropped inspector task (${item.reason}): ${item.task.description.slice(0, 120)}`,
+          )
+        }
+
         this.logger.info(
-          `Inspector finished: found ${newTasks.length} task(s)${newTasks.length > 0 ? ` [${newTasks.map((t) => t.description.slice(0, 50)).join(' | ')}]` : ''}`,
+          `Inspector finished: accepted ${accepted.length}/${newTasks.length} task(s)${accepted.length > 0 ? ` [${accepted.map((t) => t.description.slice(0, 50)).join(' | ')}]` : ''}${dropped.length > 0 ? ` (dropped=${dropped.length})` : ''}`,
         )
         this.state.lastInspection = new Date().toISOString()
         this.activeSlaves = Math.max(0, this.activeSlaves - 1)
