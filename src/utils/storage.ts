@@ -229,6 +229,7 @@ export interface MissionHistoryEntry {
   startedAt: string
   endedAt?: string
   worktreeBranch?: string
+  worktreePath?: string
   taskCount: number
 }
 

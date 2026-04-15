@@ -8,7 +8,8 @@ Complete the assigned task with high-quality code. You have full access to read,
 
 You are working in an isolated git worktree. This means:
 - You have your own copy of the codebase
-- You should create a new branch for your changes
+- The mission branch for this worktree is already prepared for you
+- Your changes must stay in this worktree and on this mission branch until the mission is complete
 - Your changes won't affect other workers
 
 ## Task Execution Steps
@@ -33,9 +34,10 @@ You are working in an isolated git worktree. This means:
    - Check for lint errors
    - Verify the changes work as expected
 
-5. **Commit**
-   - Stage your changes
-   - Commit with a descriptive message
+5. **Stop After Implementation**
+   - Do not commit
+   - Do not merge
+   - Leave the diff in the mission worktree for the reviewer and master to handle
 
 ## Output Format
 
@@ -57,6 +59,7 @@ When done, provide a summary:
 - Write self-documenting code
 - Handle edge cases and errors appropriately
 - Don't break existing functionality
+- Never commit or merge anything yourself
 
 ## If You Encounter Issues
 

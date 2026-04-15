@@ -11,6 +11,7 @@ import {
   hasUncommittedChanges,
   removeWorktree,
 } from '../../src/utils/git'
+import { addMissionHistoryEntry } from '../../src/utils/storage'
 import { setupTestEnv, teardownTestEnv } from './setup'
 
 let testDir: string
@@ -40,9 +41,11 @@ describe('Mission workspace', () => {
 
     expect(first).not.toBeNull()
     expect(second).not.toBeNull()
-    expect(first?.path).toBe(second?.path)
-    expect(first?.branch).toBe(second?.branch)
-    expect(existsSync(first?.path)).toBe(true)
+    if (!first || !second) throw new Error('workspace not created')
+
+    expect(first.path).toBe(second.path)
+    expect(first.branch).toBe(second.branch)
+    expect(existsSync(first.path)).toBe(true)
     workspace = first
   })
 
@@ -67,5 +70,22 @@ describe('Mission workspace', () => {
     const result = await commitAllChanges('task(test): commit mission workspace', workspace.path)
     expect(result.success).toBe(true)
     expect(await hasUncommittedChanges(workspace.path)).toBe(false)
+  })
+
+  test('removeWorktree 不删除仍被 mission 关联的 worktree', async () => {
+    workspace = workspace || (await ensureMissionWorkspace(mission, 'main'))
+    if (!workspace) throw new Error('workspace not created')
+
+    await addMissionHistoryEntry({
+      mission: 'mission-associated-worktree',
+      startedAt: new Date().toISOString(),
+      worktreeBranch: workspace.branch,
+      worktreePath: workspace.path,
+      taskCount: 0,
+    })
+
+    const removed = await removeWorktree(workspace.path)
+    expect(removed).toBe(false)
+    expect(existsSync(workspace.path)).toBe(true)
   })
 })

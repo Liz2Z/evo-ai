@@ -1,7 +1,10 @@
-import { join } from 'node:path'
+import { existsSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+import { loadMasterState, loadMissionHistory } from './storage'
 
 const FALLBACK_GIT_PATHS = ['/opt/homebrew/bin/git', '/usr/local/bin/git', '/usr/bin/git']
 let cachedGitBinary: string | null = null
+const PROTECTED_INTEGRATION_BRANCHES = new Set(['main', 'master', 'develop', 'dev'])
 
 type GitExecResult = { stdout: string; stderr: string; exitCode: number; spawnError?: string }
 
@@ -71,6 +74,14 @@ export async function isGitRepo(): Promise<boolean> {
 export async function getCurrentBranch(cwd?: string): Promise<string> {
   const result = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], cwd)
   return result.stdout
+}
+
+function normalizeBranchName(branch: string): string {
+  return branch.replace(/^refs\/heads\//, '').trim()
+}
+
+export function isProtectedIntegrationBranch(branch: string): boolean {
+  return PROTECTED_INTEGRATION_BRANCHES.has(normalizeBranchName(branch))
 }
 
 export async function branchExists(branch: string, cwd?: string): Promise<boolean> {
@@ -149,7 +160,128 @@ export async function ensureMissionWorkspace(
   return { path: worktreePath, branch: branchName }
 }
 
-export async function removeWorktree(worktreePath: string): Promise<boolean> {
+export interface MissionWorkspaceBranchValidationResult {
+  valid: boolean
+  currentBranch?: string
+  message: string
+}
+
+export async function validateMissionWorkspaceBranch(
+  worktreePath: string,
+  expectedBranch: string,
+): Promise<MissionWorkspaceBranchValidationResult> {
+  if (!existsSync(worktreePath)) {
+    return {
+      valid: false,
+      message: `Mission worktree does not exist: ${worktreePath}`,
+    }
+  }
+
+  const currentBranch = normalizeBranchName(await getCurrentBranch(worktreePath))
+  const normalizedExpectedBranch = normalizeBranchName(expectedBranch)
+
+  if (!currentBranch) {
+    return {
+      valid: false,
+      message: 'Unable to determine current branch for mission worktree',
+    }
+  }
+
+  if (currentBranch !== normalizedExpectedBranch) {
+    return {
+      valid: false,
+      currentBranch,
+      message: `Mission worktree branch mismatch. Expected ${normalizedExpectedBranch}, got ${currentBranch}`,
+    }
+  }
+
+  if (isProtectedIntegrationBranch(currentBranch)) {
+    return {
+      valid: false,
+      currentBranch,
+      message: `Mission worktree is on protected integration branch: ${currentBranch}`,
+    }
+  }
+
+  return {
+    valid: true,
+    currentBranch,
+    message: `Mission worktree branch verified: ${currentBranch}`,
+  }
+}
+
+export interface WorktreeMissionAssociation {
+  mission: string
+  source: 'master' | 'history' | 'local'
+}
+
+function normalizeWorktreePath(worktreePath: string): string {
+  return resolve(worktreePath)
+}
+
+async function readLocalWorktreeMission(worktreePath: string): Promise<string | null> {
+  const masterStateFile = join(worktreePath, '.evo-ai', '.data', 'master.json')
+  if (!existsSync(masterStateFile)) return null
+
+  try {
+    const parsed = (await Bun.file(masterStateFile).json()) as { mission?: unknown }
+    return typeof parsed.mission === 'string' && parsed.mission.trim()
+      ? parsed.mission.trim()
+      : null
+  } catch {
+    return null
+  }
+}
+
+export async function getWorktreeMissionAssociations(
+  worktreePath: string,
+): Promise<WorktreeMissionAssociation[]> {
+  const normalizedPath = normalizeWorktreePath(worktreePath)
+  const associations = new Map<string, WorktreeMissionAssociation>()
+
+  const masterState = await loadMasterState()
+  if (
+    masterState.missionWorktree &&
+    normalizeWorktreePath(masterState.missionWorktree) === normalizedPath &&
+    masterState.mission.trim()
+  ) {
+    associations.set(`master:${masterState.mission}`, {
+      mission: masterState.mission,
+      source: 'master',
+    })
+  }
+
+  const missionHistory = await loadMissionHistory()
+  for (const entry of missionHistory) {
+    if (!entry.worktreePath || normalizeWorktreePath(entry.worktreePath) !== normalizedPath)
+      continue
+    if (!entry.mission.trim()) continue
+    associations.set(`history:${entry.mission}`, {
+      mission: entry.mission,
+      source: 'history',
+    })
+  }
+
+  const localMission = await readLocalWorktreeMission(normalizedPath)
+  if (localMission) {
+    associations.set(`local:${localMission}`, {
+      mission: localMission,
+      source: 'local',
+    })
+  }
+
+  return [...associations.values()]
+}
+
+export async function removeWorktree(
+  worktreePath: string,
+  options?: { allowAssociated?: boolean },
+): Promise<boolean> {
+  if (!options?.allowAssociated) {
+    const associations = await getWorktreeMissionAssociations(worktreePath)
+    if (associations.length > 0) return false
+  }
+
   const result = await runGit(['worktree', 'remove', '--force', worktreePath])
   return result.exitCode === 0
 }

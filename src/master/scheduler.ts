@@ -16,9 +16,11 @@ import {
   deleteBranch,
   ensureMissionWorkspace,
   getUncommittedDiff,
+  getWorktreeMissionAssociations,
   hasUncommittedChanges,
   listWorktrees,
   removeWorktree,
+  validateMissionWorkspaceBranch,
 } from '../utils/git'
 import { addToGlobalBuffer, appendTaskLog, Logger } from '../utils/logger'
 import {
@@ -286,9 +288,17 @@ export class Master extends EventEmitter {
     const branchToRemove = this.state.missionBranch
 
     if (worktreeToRemove && branchToRemove) {
-      this.logger.info(`Removing mission worktree: ${worktreeToRemove}`)
-      await removeWorktree(worktreeToRemove)
-      await deleteBranch(branchToRemove)
+      const associations = await getWorktreeMissionAssociations(worktreeToRemove)
+      if (associations.length > 0) {
+        const missions = [...new Set(associations.map((entry) => entry.mission))].join(', ')
+        this.logger.info(
+          `Skipping mission worktree removal because it is still associated with mission(s): ${missions}`,
+        )
+      } else {
+        this.logger.info(`Removing mission worktree: ${worktreeToRemove}`)
+        await removeWorktree(worktreeToRemove)
+        await deleteBranch(branchToRemove)
+      }
 
       this.state.missionWorktree = undefined
       this.state.missionBranch = undefined
@@ -606,6 +616,23 @@ export class Master extends EventEmitter {
       this.state.missionBranch &&
       existsSync(this.state.missionWorktree)
     ) {
+      const validation = await validateMissionWorkspaceBranch(
+        this.state.missionWorktree,
+        this.state.missionBranch,
+      )
+      if (!validation.valid) {
+        return {
+          status: 'failed',
+          path: this.state.missionWorktree,
+          branch: this.state.missionBranch,
+          message: validation.message,
+        }
+      }
+
+      await updateMissionHistoryEntry(this.state.mission, {
+        worktreeBranch: this.state.missionBranch,
+        worktreePath: this.state.missionWorktree,
+      })
       return {
         status: 'ready',
         path: this.state.missionWorktree,
@@ -626,6 +653,10 @@ export class Master extends EventEmitter {
     this.state.missionWorktree = workspace.path
     this.state.missionBranch = workspace.branch
     await saveMasterState(this.state)
+    await updateMissionHistoryEntry(this.state.mission, {
+      worktreeBranch: workspace.branch,
+      worktreePath: workspace.path,
+    })
     this.emit('worktree:change', {
       mission: this.state.mission,
       action: 'created',
@@ -949,6 +980,47 @@ export class Master extends EventEmitter {
       return { status: 'not_found', taskId, message: 'Task not found' }
     }
 
+    if (task.status !== 'reviewing') {
+      return {
+        status: 'failed',
+        taskId,
+        message: `Current task is ${task.status}. Only reviewed tasks can be committed.`,
+      }
+    }
+
+    const latestReview = task.reviewHistory[task.reviewHistory.length - 1]
+    if (!latestReview || latestReview.review.verdict !== 'approve') {
+      return {
+        status: 'failed',
+        taskId,
+        message: 'Current task has not been approved by review. Commit is blocked.',
+      }
+    }
+
+    if (this.state.currentStage !== 'committing') {
+      return {
+        status: 'failed',
+        taskId,
+        message: `Current stage is ${this.state.currentStage}. Commit is only allowed in committing stage.`,
+      }
+    }
+
+    if (!this.state.missionBranch) {
+      return { status: 'failed', taskId, message: 'Mission branch is missing' }
+    }
+
+    const branchValidation = await validateMissionWorkspaceBranch(
+      this.state.missionWorktree,
+      this.state.missionBranch,
+    )
+    if (!branchValidation.valid) {
+      return {
+        status: 'failed',
+        taskId,
+        message: `${branchValidation.message}. Mission changes must stay on the mission branch until the mission is complete.`,
+      }
+    }
+
     const hasChanges = await hasUncommittedChanges(this.state.missionWorktree)
     if (!hasChanges) {
       await this.failTask(taskId, 'No changes to commit for current task')
@@ -1153,6 +1225,15 @@ export class Master extends EventEmitter {
     )
 
     for (const worktree of staleWorktrees) {
+      const associations = await getWorktreeMissionAssociations(worktree)
+      if (associations.length > 0) {
+        const missions = [...new Set(associations.map((entry) => entry.mission))].join(', ')
+        this.logger.info(
+          `Skipping stale worktree cleanup because it is still associated with mission(s): ${missions}`,
+        )
+        continue
+      }
+
       await removeWorktree(worktree)
     }
   }

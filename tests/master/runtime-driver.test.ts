@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { decisionEngine } from '../../src/master/decision'
 import {
+  buildMasterPrompt,
+  buildMasterSystemPrompt,
   createMasterRuntime,
   MasterAgentAdapter,
   type MasterRuntime,
@@ -287,6 +289,30 @@ describe('Master runtime driver', () => {
     ])
     await expect(adapter.callTool('shell_exec', { cmd: 'pwd' }, tools)).rejects.toThrow(
       'Unauthorized master tool',
+    )
+  })
+
+  test('master prompt 明确约束 mission 只能在 worktree 分支提交且禁止提前 merge', () => {
+    const context = createContext('session_agent')
+    context.masterState.missionBranch = 'mission/test'
+    context.masterState.missionWorktree = '/tmp/mission'
+
+    const systemPrompt = buildMasterSystemPrompt()
+    const prompt = buildMasterPrompt(context, [])
+
+    expect(systemPrompt).toContain(
+      'All code changes for the mission must stay inside the current mission worktree on the mission branch.',
+    )
+    expect(systemPrompt).toContain('Do not commit task changes before reviewer approval.')
+    expect(systemPrompt).toContain(
+      'Do not merge mission work into main/master/develop during task execution.',
+    )
+    expect(prompt).toContain(
+      'All implementation changes must stay on the mission branch inside the mission worktree.',
+    )
+    expect(prompt).toContain('Only call commit_current_task after reviewer approval')
+    expect(prompt).toContain(
+      'Do not merge to main/master/develop while the mission is still running.',
     )
   })
 

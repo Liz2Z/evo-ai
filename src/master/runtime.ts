@@ -344,10 +344,13 @@ class HybridMasterRuntime implements MasterRuntime {
       }
 
       if (snapshot.currentStage === 'committing') {
-        await tools.commit_current_task()
+        const commitResult = await tools.commit_current_task()
         toolCalls.push('commit_current_task')
         return {
-          summary: `Committed task ${currentTask.id}`,
+          summary:
+            commitResult.status === 'committed'
+              ? `Committed task ${currentTask.id}`
+              : `Commit blocked for ${currentTask.id}: ${commitResult.message}`,
           toolCalls,
           unauthorizedToolCalls,
         }
@@ -604,7 +607,7 @@ function asPiToolResult(value: unknown) {
   }
 }
 
-function buildMasterSystemPrompt(): string {
+export function buildMasterSystemPrompt(): string {
   return [
     'You are the mission orchestration agent for this repository.',
     'Use only the provided MasterTools tools.',
@@ -613,11 +616,15 @@ function buildMasterSystemPrompt(): string {
     '2. Exactly one mission worktree/branch.',
     '3. Exactly one active slave at a time.',
     '4. The current task must finish review and commit before the next task starts.',
+    '5. All code changes for the mission must stay inside the current mission worktree on the mission branch.',
+    '6. Do not commit task changes before reviewer approval.',
+    '7. Review approval only unlocks a task-level commit on the mission branch. Do not merge mission work into main/master/develop during task execution.',
+    '8. Merge is only a mission-completion action and must never happen as part of an in-flight task cycle.',
     'Be concise and tool-driven.',
   ].join('\n')
 }
 
-function buildMasterPrompt(context: MasterRuntimeContext, sessionHints: string[]): string {
+export function buildMasterPrompt(context: MasterRuntimeContext, sessionHints: string[]): string {
   const pendingQuestions =
     context.masterState.pendingQuestions
       .filter((question) => !question.answered)
@@ -650,6 +657,10 @@ function buildMasterPrompt(context: MasterRuntimeContext, sessionHints: string[]
     `Current task: ${context.masterState.currentTaskId || 'none'}`,
     `Mission branch: ${context.masterState.missionBranch || 'unset'}`,
     `Mission worktree: ${context.masterState.missionWorktree || 'unset'}`,
+    'Execution policy:',
+    '- All implementation changes must stay on the mission branch inside the mission worktree.',
+    '- Only call commit_current_task after reviewer approval and only for the current reviewed task.',
+    '- Do not merge to main/master/develop while the mission is still running.',
     'Task summary:',
     taskSummary,
     'Pending human questions:',

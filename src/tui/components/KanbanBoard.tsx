@@ -23,6 +23,7 @@ export function KanbanBoard({ emitter, master, heartbeatIntervalMs, onQuit }: Ka
   const [showLogs, setShowLogs] = useState(false)
   const { inputActive, inputValue, setInputValue, activate, cancel } = useInputBar()
   const [lastMessage, setLastMessage] = useState('')
+  const [quitting, setQuitting] = useState(false)
 
   const {
     tasks,
@@ -104,13 +105,25 @@ export function KanbanBoard({ emitter, master, heartbeatIntervalMs, onQuit }: Ka
   const pendingQuestions = unansweredQuestions.length
   const primaryQuestion = unansweredQuestions[0]
 
+  const handleQuit = useCallback(async () => {
+    if (quitting) return
+    setQuitting(true)
+    try {
+      await onQuit()
+      exit()
+    } catch (error) {
+      setLastMessage(`Quit failed: ${error instanceof Error ? error.message : String(error)}`)
+      setQuitting(false)
+    }
+  }, [exit, onQuit, quitting])
+
   // Global key handling (only when input is NOT active)
   useInput((input, key) => {
     if (inputActive) return
 
     if (input === 'q') {
-      onQuit()
-      exit()
+      void handleQuit()
+      return
     }
     if (input === 'l') {
       setShowLogs((prev) => !prev)
@@ -207,6 +220,12 @@ export function KanbanBoard({ emitter, master, heartbeatIntervalMs, onQuit }: Ka
       {lastMessage && (
         <Box paddingX={1}>
           <Text color="green">{lastMessage}</Text>
+        </Box>
+      )}
+
+      {quitting && (
+        <Box paddingX={1}>
+          <Text color="yellow">Shutting down...</Text>
         </Box>
       )}
 
