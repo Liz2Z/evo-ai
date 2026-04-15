@@ -1,9 +1,19 @@
 // Auto-generated
-import { describe, expect, mock, test } from 'bun:test'
+import { beforeEach, describe, expect, mock, test } from 'bun:test'
 import type { AgentSessionEvent } from '@mariozechner/pi-coding-agent'
 import { runInspector, runReviewer, runWorker, SlaveLauncher } from '../../src/slave/launcher'
 import type { ReviewResult, Task, TaskResult } from '../../src/types'
 import type { LogMessageEvent } from '../../src/types/events'
+
+const sessionLifecycleState = {
+  disposeCount: 0,
+  abortCount: 0,
+}
+
+beforeEach(() => {
+  sessionLifecycleState.disposeCount = 0
+  sessionLifecycleState.abortCount = 0
+})
 
 // Mock dependencies
 mock.module('@mariozechner/pi-coding-agent', () => ({
@@ -84,8 +94,20 @@ mock.module('../../src/agent/pi', () => ({
             ],
           })
         },
+        dispose: () => {
+          sessionLifecycleState.disposeCount += 1
+        },
+        abort: async () => {
+          sessionLifecycleState.abortCount += 1
+        },
       },
     }
+  },
+  disposePiSession: (session) => {
+    session?.dispose?.()
+  },
+  abortPiSession: async (session) => {
+    await session?.abort?.()
   },
 }))
 
@@ -470,6 +492,38 @@ describe('SlaveLauncher - Error Handling', () => {
 
     // Verify slave is in a clean state
     expect(launcher).toBeDefined()
+    expect(sessionLifecycleState.abortCount).toBe(0)
+    expect(sessionLifecycleState.disposeCount).toBe(0)
+  })
+})
+
+describe('SlaveLauncher - Session Cleanup', () => {
+  test('should dispose session after execute completes', async () => {
+    const task: Task = {
+      id: 'test-task-session-dispose',
+      type: 'fix',
+      status: 'pending',
+      priority: 5,
+      description: 'Test session disposal',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      attemptCount: 0,
+      maxAttempts: 3,
+      reviewHistory: [],
+    }
+
+    const launcher = new SlaveLauncher({
+      type: 'worker',
+      task,
+      mission: 'Test session cleanup',
+      recentDecisions: [],
+    })
+
+    await launcher.start()
+    await launcher.execute()
+
+    expect(sessionLifecycleState.disposeCount).toBe(1)
+    expect(sessionLifecycleState.abortCount).toBe(0)
   })
 })
 

@@ -122,6 +122,11 @@ export interface CreatePiSessionOptions {
   customTools?: any[]
 }
 
+export interface PiSessionLifecycle {
+  abort?: () => Promise<void> | void
+  dispose?: () => void
+}
+
 export async function createPiSession(options: CreatePiSessionOptions) {
   const model = resolvePiModel(options.modelId, options.config.provider.baseUrl)
   setProviderApiKeyEnv(model.provider, options.config.provider.apiKey)
@@ -137,5 +142,23 @@ export async function createPiSession(options: CreatePiSessionOptions) {
   return {
     session: result.session,
     model,
+  }
+}
+
+export async function abortPiSession(session?: PiSessionLifecycle | null): Promise<void> {
+  if (!session?.abort) return
+  try {
+    await session.abort()
+  } catch {
+    // Best effort cleanup.
+  }
+}
+
+export function disposePiSession(session?: PiSessionLifecycle | null): void {
+  if (!session?.dispose) return
+  try {
+    session.dispose()
+  } catch {
+    // Best effort cleanup.
   }
 }

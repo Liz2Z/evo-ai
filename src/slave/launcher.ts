@@ -2,7 +2,12 @@ import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import type { AgentSessionEvent } from '@mariozechner/pi-coding-agent'
 import { createCodingTools, createReadOnlyTools } from '@mariozechner/pi-coding-agent'
-import { createPiSession } from '../agent/pi'
+import {
+  abortPiSession,
+  createPiSession,
+  disposePiSession,
+  type PiSessionLifecycle,
+} from '../agent/pi'
 import { getConfiguredModel, settings } from '../config'
 import type { ReviewResult, SlaveType, Task, TaskResult } from '../types'
 import type { LogMessageEvent } from '../types/events'
@@ -231,6 +236,7 @@ export class SlaveLauncher {
   private readonly task: Task
   private readonly logger?: SlaveLogger
   private readonly onLog?: (event: LogMessageEvent) => void
+  private activeSession?: PiSessionLifecycle
 
   constructor(private options: SlaveOptions) {
     this.slaveId = generateSlaveId(options.type)
@@ -340,12 +346,15 @@ export class SlaveLauncher {
           modelId,
           tools,
         })
+        this.activeSession = session
         unsubscribe = session.subscribe(onSessionEvent)
         await session.prompt(`${fullSystemPrompt}\n\n${taskPrompt}`)
         flushTextBuffer(true)
         output = session.getLastAssistantText() || ''
       } finally {
         if (unsubscribe) unsubscribe()
+        disposePiSession(this.activeSession)
+        this.activeSession = undefined
         apiLimiter.release()
       }
 
@@ -502,6 +511,9 @@ export class SlaveLauncher {
 
   async cancel(): Promise<void> {
     this.log('info', `${this.type} slave ${this.slaveId} cancelled`)
+    await abortPiSession(this.activeSession)
+    disposePiSession(this.activeSession)
+    this.activeSession = undefined
     await this.cleanup()
   }
 }

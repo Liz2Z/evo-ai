@@ -8,7 +8,7 @@ import {
   parseLogFileContent,
 } from '../../src/tui/hooks/logStreamModel'
 import type { LogEntry } from '../../src/types'
-import { getGlobalLogBuffer } from '../../src/utils/logger'
+import { addToGlobalBuffer, clearTaskLogBuffer, getGlobalLogBuffer } from '../../src/utils/logger'
 
 function logEntry(overrides: Partial<LogEntry>): LogEntry {
   return {
@@ -97,6 +97,28 @@ describe('logStreamModel', () => {
 
     expect(merged).toHaveLength(2)
     expect(merged.map((entry) => entry.source)).toEqual(['status', 'tool_step'])
+  })
+
+  test('全局日志缓存支持按任务清理', () => {
+    const entry = logEntry({ message: 'cleanup me' })
+
+    addToGlobalBuffer('task-1', entry)
+    expect(getGlobalLogBuffer().get('task-1')).toHaveLength(1)
+
+    clearTaskLogBuffer('task-1')
+
+    expect(getGlobalLogBuffer().has('task-1')).toBe(false)
+  })
+
+  test('全局日志缓存会淘汰过旧任务，避免任务数无限增长', () => {
+    for (let i = 0; i < 120; i++) {
+      addToGlobalBuffer(`task-${i}`, logEntry({ taskId: `task-${i}`, message: `line-${i}` }))
+    }
+
+    const buffer = getGlobalLogBuffer()
+    expect(buffer.size).toBeLessThanOrEqual(100)
+    expect(buffer.has('task-0')).toBe(false)
+    expect(buffer.has('task-119')).toBe(true)
   })
 
   test('日志文件解析会忽略非法行', () => {

@@ -22,7 +22,7 @@ import {
   removeWorktree,
   validateMissionWorkspaceBranch,
 } from '../utils/git'
-import { addToGlobalBuffer, appendTaskLog, Logger } from '../utils/logger'
+import { addToGlobalBuffer, appendTaskLog, clearTaskLogBuffer, Logger } from '../utils/logger'
 import {
   addFailedTask,
   addHistoryEntry,
@@ -222,6 +222,9 @@ export class Master extends EventEmitter {
       await saveMasterState(this.state)
       this.emitMasterState()
     }
+    if (task) {
+      clearTaskLogBuffer(taskId)
+    }
     return task !== null
   }
 
@@ -282,6 +285,7 @@ export class Master extends EventEmitter {
     if (this.state.currentTaskId) {
       this.logger.info(`Abandoning current task: ${this.state.currentTaskId}`)
       await updateTask(this.state.currentTaskId, { status: 'failed' })
+      clearTaskLogBuffer(this.state.currentTaskId)
       this.state.currentTaskId = undefined
     }
 
@@ -315,6 +319,7 @@ export class Master extends EventEmitter {
     for (const task of tasks) {
       if (['pending', 'running', 'reviewing'].includes(task.status)) {
         await updateTask(task.id, { status: 'failed' })
+        clearTaskLogBuffer(task.id)
       }
     }
 
@@ -932,6 +937,7 @@ export class Master extends EventEmitter {
         attemptCount: nextAttempt,
         reviewHistory,
       })
+      clearTaskLogBuffer(taskId)
       this.emitMasterState()
       return
     }
@@ -1048,6 +1054,7 @@ export class Master extends EventEmitter {
     this.state.currentStage = 'idle'
     await saveMasterState(this.state)
     this.emitTaskStatusChange(taskId, task.status, 'completed', { ...task, status: 'completed' })
+    clearTaskLogBuffer(taskId)
     this.emitMasterState()
     await addHistoryEntry({
       timestamp: new Date().toISOString(),
@@ -1088,6 +1095,7 @@ export class Master extends EventEmitter {
         ? `${latestTask.context}\n\nFailure: ${reason}`
         : `Failure: ${reason}`,
     })
+    clearTaskLogBuffer(taskId)
     this.emitMasterState()
   }
 

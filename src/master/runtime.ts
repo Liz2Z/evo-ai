@@ -1,6 +1,6 @@
 import { Type } from '@mariozechner/pi-ai'
 import { defineTool, type ToolDefinition } from '@mariozechner/pi-coding-agent'
-import { createPiSession } from '../agent/pi'
+import { createPiSession, disposePiSession } from '../agent/pi'
 import { getConfiguredModel } from '../config'
 import type {
   Config,
@@ -466,19 +466,23 @@ async function executeClaudeMasterTurn(params: {
     customTools,
   })
 
-  await session.prompt(prompt)
-  const resultText = session.getLastAssistantText() || ''
-  const assistantMessages = session.messages.filter(
-    (item: any) => item?.role === 'assistant',
-  ) as Array<{ stopReason?: string; errorMessage?: string }>
-  const lastAssistant = assistantMessages[assistantMessages.length - 1]
-  if (lastAssistant?.stopReason === 'error') {
-    throw new Error(lastAssistant.errorMessage || 'Master agent returned error')
-  }
+  try {
+    await session.prompt(prompt)
+    const resultText = session.getLastAssistantText() || ''
+    const assistantMessages = session.messages.filter(
+      (item: any) => item?.role === 'assistant',
+    ) as Array<{ stopReason?: string; errorMessage?: string }>
+    const lastAssistant = assistantMessages[assistantMessages.length - 1]
+    if (lastAssistant?.stopReason === 'error') {
+      throw new Error(lastAssistant.errorMessage || 'Master agent returned error')
+    }
 
-  return {
-    summary: resultText || 'Pi master turn completed',
-    sessionId,
+    return {
+      summary: resultText || 'Pi master turn completed',
+      sessionId,
+    }
+  } finally {
+    disposePiSession(session)
   }
 }
 

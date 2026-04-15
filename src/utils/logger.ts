@@ -7,6 +7,7 @@ import type { LogMessageEvent } from '../types/events'
 import { formatBeijingTime, getBeijingTimestamp } from './time'
 
 const MAX_BUFFER_SIZE = 500
+const MAX_GLOBAL_TASKS = 100
 const LOGS_DIR = join(getRuntimeDataDir(), 'logs')
 
 function logEntryKey(entry: LogEntry): string {
@@ -122,10 +123,33 @@ export function getGlobalLogBuffer(): Map<string, LogEntry[]> {
   return globalLogBuffer
 }
 
+function touchGlobalTaskBuffer(taskId: string): void {
+  const buffer = globalLogBuffer.get(taskId)
+  if (!buffer) return
+  globalLogBuffer.delete(taskId)
+  globalLogBuffer.set(taskId, buffer)
+}
+
+function trimGlobalLogBuffer(): void {
+  while (globalLogBuffer.size > MAX_GLOBAL_TASKS) {
+    const oldestTaskId = globalLogBuffer.keys().next().value
+    if (!oldestTaskId) return
+    globalLogBuffer.delete(oldestTaskId)
+  }
+}
+
+export function getBufferedTaskLogs(taskId: string): LogEntry[] {
+  const buffer = globalLogBuffer.get(taskId)
+  if (!buffer) return []
+  touchGlobalTaskBuffer(taskId)
+  return buffer
+}
+
 export function addToGlobalBuffer(taskId: string, entry: LogEntry): void {
   const buffer = globalLogBuffer.get(taskId) || []
   const key = logEntryKey(entry)
   if (buffer.some((item) => logEntryKey(item) === key)) {
+    touchGlobalTaskBuffer(taskId)
     return
   }
   buffer.push(entry)
@@ -133,6 +157,12 @@ export function addToGlobalBuffer(taskId: string, entry: LogEntry): void {
     buffer.splice(0, buffer.length - MAX_BUFFER_SIZE)
   }
   globalLogBuffer.set(taskId, buffer)
+  touchGlobalTaskBuffer(taskId)
+  trimGlobalLogBuffer()
+}
+
+export function clearTaskLogBuffer(taskId: string): void {
+  globalLogBuffer.delete(taskId)
 }
 
 /**

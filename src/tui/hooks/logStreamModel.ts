@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { getRuntimeDataDir } from '../../runtime/paths'
 import type { LogEntry } from '../../types'
-import { getGlobalLogBuffer } from '../../utils/logger'
+import { getBufferedTaskLogs } from '../../utils/logger'
 import { getTimestampValue } from '../../utils/time'
 
 export const DEFAULT_LOG_LIMIT = 200
@@ -113,7 +113,7 @@ export async function loadTaskLogs(
     logsDir?: string
   },
 ): Promise<LogEntry[]> {
-  const inMemory = getGlobalLogBuffer().get(taskId) || []
+  const inMemory = getBufferedTaskLogs(taskId)
   const fromDisk = await readPersistedTaskLogs(taskId, options?.logsDir)
 
   return mergeLogEntries([inMemory, fromDisk], slaveIds, options?.limit ?? DEFAULT_LOG_LIMIT)
