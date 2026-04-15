@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { getRuntimeDataDir } from '../runtime/paths'
 import type { LogEntry } from '../types'
 import type { LogMessageEvent } from '../types/events'
+import { formatBeijingTime, getBeijingTimestamp } from './time'
 
 const MAX_BUFFER_SIZE = 500
 const LOGS_DIR = join(getRuntimeDataDir(), 'logs')
@@ -73,7 +74,7 @@ export class SlaveLogger {
 
   info(message: string, source: LogEntry['source'] = 'status'): void {
     this.write({
-      timestamp: new Date().toISOString(),
+      timestamp: getBeijingTimestamp(),
       slaveId: this.slaveId,
       taskId: this.taskId,
       source,
@@ -84,7 +85,7 @@ export class SlaveLogger {
 
   error(message: string, source: LogEntry['source'] = 'status'): void {
     this.write({
-      timestamp: new Date().toISOString(),
+      timestamp: getBeijingTimestamp(),
       slaveId: this.slaveId,
       taskId: this.taskId,
       source,
@@ -95,7 +96,7 @@ export class SlaveLogger {
 
   debug(message: string, source: LogEntry['source'] = 'status'): void {
     this.write({
-      timestamp: new Date().toISOString(),
+      timestamp: getBeijingTimestamp(),
       slaveId: this.slaveId,
       taskId: this.taskId,
       source,
@@ -146,7 +147,7 @@ export class Logger {
   }
 
   private formatMessage(level: string, message: string): string {
-    const timestamp = new Date().toISOString().split('T')[1].slice(0, -1)
+    const timestamp = formatBeijingTime(new Date(), { withMilliseconds: true })
     return `[${timestamp}] [${this.context}] [${level}] ${message}`
   }
 
@@ -157,7 +158,7 @@ export class Logger {
         this.initialized = true
       }
       const line = `${JSON.stringify({
-        timestamp: new Date().toISOString(),
+        timestamp: getBeijingTimestamp(),
         context: this.context,
         level,
         message,

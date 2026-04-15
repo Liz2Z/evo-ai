@@ -62,6 +62,17 @@ describe('logStreamModel', () => {
     expect(logs.map((entry) => entry.message)).toEqual(['first', 'second'])
   })
 
+  test('混合 UTC 和北京时间时间戳时，仍按真实时间顺序返回', () => {
+    const merged = mergeLogEntries([
+      [
+        logEntry({ timestamp: '2026-04-08T18:00:00.000+08:00', message: 'beijing-late' }),
+        logEntry({ timestamp: '2026-04-08T09:30:00.000Z', message: 'utc-early' }),
+      ],
+    ])
+
+    expect(merged.map((entry) => entry.message)).toEqual(['utc-early', 'beijing-late'])
+  })
+
   test('内存与文件日志会去重合并', async () => {
     const logsDir = join(process.cwd(), 'tmp-test-logs')
     await mkdir(logsDir, { recursive: true })

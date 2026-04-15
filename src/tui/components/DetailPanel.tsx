@@ -1,6 +1,7 @@
 import { Box, Text } from 'ink'
 import type React from 'react'
 import type { LogEntry, MasterState, SlaveInfo, Task } from '../../types'
+import { formatBeijingTime } from '../../utils/time'
 import { getTaskFailureReason, isActiveTask } from './detailPanelModel'
 
 interface DetailPanelProps {
@@ -22,8 +23,7 @@ const STATUS_COLORS: Record<string, string> = {
 }
 
 function formatTime(iso: string): string {
-  if (!iso) return 'N/A'
-  return new Date(iso).toLocaleTimeString('en-US', { hour12: false })
+  return iso ? formatBeijingTime(iso) : 'N/A'
 }
 
 function truncateText(text: string, maxLength: number): string {

@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { getRuntimeDataDir } from '../../runtime/paths'
 import type { LogEntry } from '../../types'
 import { getGlobalLogBuffer } from '../../utils/logger'
+import { getTimestampValue } from '../../utils/time'
 
 export const DEFAULT_LOG_LIMIT = 200
 
@@ -74,7 +75,12 @@ export function mergeLogEntries(
     }
   }
 
-  return [...merged.values()].sort((a, b) => a.timestamp.localeCompare(b.timestamp)).slice(-limit)
+  return [...merged.values()]
+    .sort((a, b) => {
+      const timeDiff = getTimestampValue(a.timestamp) - getTimestampValue(b.timestamp)
+      return timeDiff !== 0 ? timeDiff : a.timestamp.localeCompare(b.timestamp)
+    })
+    .slice(-limit)
 }
 
 export function appendLogEntry(
