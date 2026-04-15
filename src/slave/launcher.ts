@@ -285,9 +285,14 @@ export class SlaveLauncher {
   private buildTaskPrompt(): string {
     if (this.type === 'inspector') {
       return [
-        'Scan the repository and output ONLY valid JSON.',
+        'Inspect the code paths that matter most to the main mission and output ONLY valid JSON.',
         'Schema: {"tasks":[{"description":"...","type":"fix|feature|refactor|test|docs|other","priority":1-10,"context":"optional"}]}',
         'Return a raw JSON object only. Do not wrap with markdown code fences.',
+        'Prioritize tasks that directly unblock, implement, or validate the main mission.',
+        'If the mission core appears complete, you may propose 1-2 adjacent high-value follow-up tasks in the same area.',
+        'Stay mission-scoped. Ignore unrelated cleanup, generic refactors, broad docs, dependency upgrades, and non-critical tests.',
+        'Return at most 3 tasks. Prefer 1-2 if possible.',
+        'Each task context must include either "Mission link:" or "Follow-up value:", plus concrete file/module scope.',
         "Never create low-value tasks that only add boilerplate comments or file headers (for example '// Auto-generated').",
         'Do not include markdown or explanations.',
       ].join('\n')

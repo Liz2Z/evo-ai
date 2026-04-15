@@ -10,6 +10,7 @@ function createTask(id: string, description: string, status: Task['status'] = 'p
     status,
     priority: 5,
     description,
+    context: 'Mission link: 这是当前 mission 的直接下一步。Scope: src/master/scheduler.ts',
     createdAt: now,
     updatedAt: now,
     attemptCount: 0,
@@ -66,5 +67,39 @@ describe('sanitizeInspectorTasks', () => {
     const result = sanitizeInspectorTasks(incoming, [])
     expect(result.accepted.map((task) => task.id)).toEqual(['n1', 'n2'])
     expect(result.dropped).toHaveLength(0)
+  })
+
+  test('过滤缺少关联说明的任务', () => {
+    const task = createTask('n1', 'Refactor status bar rendering logic')
+    delete task.context
+
+    const result = sanitizeInspectorTasks([task], [])
+    expect(result.accepted).toHaveLength(0)
+    expect(result.dropped).toHaveLength(1)
+    expect(result.dropped[0]?.reason).toBe('missing_relevance')
+  })
+
+  test('允许带 follow-up 说明的任务', () => {
+    const task = createTask('n1', 'Add focused regression tests for the new mission flow')
+    task.context =
+      'Follow-up value: hardens the newly completed mission path. Scope: tests/master/runtime-driver.test.ts'
+
+    const result = sanitizeInspectorTasks([task], [])
+    expect(result.accepted.map((item) => item.id)).toEqual(['n1'])
+    expect(result.dropped).toHaveLength(0)
+  })
+
+  test('最多保留 3 个最高优先级任务', () => {
+    const incoming = [
+      { ...createTask('n1', 'Task 1'), priority: 1 },
+      { ...createTask('n2', 'Task 2'), priority: 8 },
+      { ...createTask('n3', 'Task 3'), priority: 6 },
+      { ...createTask('n4', 'Task 4'), priority: 10 },
+    ]
+
+    const result = sanitizeInspectorTasks(incoming, [])
+    expect(result.accepted.map((task) => task.id)).toEqual(['n4', 'n2', 'n3'])
+    expect(result.dropped).toHaveLength(1)
+    expect(result.dropped[0]?.reason).toBe('over_limit')
   })
 })
