@@ -222,3 +222,38 @@ export async function answerQuestion(questionId: string, answer: string): Promis
     await saveMasterState(state)
   }
 }
+
+// Mission history
+export interface MissionHistoryEntry {
+  mission: string
+  startedAt: string
+  endedAt?: string
+  worktreeBranch?: string
+  taskCount: number
+}
+
+export async function loadMissionHistory(): Promise<MissionHistoryEntry[]> {
+  return readJSON('mission_history.json', [])
+}
+
+export async function addMissionHistoryEntry(
+  entry: Omit<MissionHistoryEntry, 'endedAt'>,
+): Promise<void> {
+  const history = await loadMissionHistory()
+  history.push(entry)
+  await writeJSON('mission_history.json', history)
+  emitProjectionUpdated('mission_history')
+}
+
+export async function updateMissionHistoryEntry(
+  mission: string,
+  updates: Partial<MissionHistoryEntry>,
+): Promise<void> {
+  const history = await loadMissionHistory()
+  const index = history.findIndex((entry) => entry.mission === mission && !entry.endedAt)
+  if (index !== -1) {
+    history[index] = { ...history[index], ...updates }
+    await writeJSON('mission_history.json', history)
+    emitProjectionUpdated('mission_history')
+  }
+}

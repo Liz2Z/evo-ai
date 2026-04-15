@@ -26,13 +26,20 @@ function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString('en-US', { hour12: false })
 }
 
+function truncateText(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text
+  return `${text.slice(0, maxLength - 3)}...`
+}
+
 function renderLogLine(entry: LogEntry, showSlaveId: boolean) {
   return (
     <Box>
-      <Text color="gray">{formatTime(entry.timestamp)} </Text>
-      {showSlaveId && <Text color="cyan">[{entry.slaveId.slice(-7)}] </Text>}
-      <Text color={entry.level === 'error' ? 'red' : entry.level === 'debug' ? 'gray' : 'white'}>
-        {entry.message}
+      <Text wrap="truncate-end">
+        <Text color="gray">{formatTime(entry.timestamp)} </Text>
+        {showSlaveId && <Text color="cyan">[{entry.slaveId.slice(-7)}] </Text>}
+        <Text color={entry.level === 'error' ? 'red' : entry.level === 'debug' ? 'gray' : 'white'}>
+          {entry.message}
+        </Text>
       </Text>
     </Box>
   )
@@ -70,38 +77,41 @@ function buildSummaryLines(
 
   if (masterState?.currentStage) {
     lines.push(
-      <Text key="stage">
+      <Text key="stage" wrap="truncate-end">
         Mission stage: <Text color="cyan">{masterState.currentStage}</Text>
       </Text>,
     )
   }
   if (masterState?.missionBranch) {
     lines.push(
-      <Text key="branch">
+      <Text key="branch" wrap="truncate-end">
         Mission branch: <Text color="cyan">{masterState.missionBranch}</Text>
       </Text>,
     )
   }
   if (masterState?.missionWorktree) {
     lines.push(
-      <Text key="worktree">
+      <Text key="worktree" wrap="truncate-end">
         Mission worktree: <Text color="gray">{masterState.missionWorktree}</Text>
       </Text>,
     )
   }
   if (task.attemptCount > 0) {
     lines.push(
-      <Text key="attempts">
+      <Text key="attempts" wrap="truncate-end">
         Review rounds: {task.attemptCount}/{task.maxAttempts}
       </Text>,
     )
   }
 
-  lines.push(<Text key="desc-label">Description:</Text>)
   lines.push(
-    <Text key="desc-text">
-      {task.description.slice(0, 120)}
-      {task.description.length > 120 ? '...' : ''}
+    <Text key="desc-label" wrap="truncate-end">
+      Description:
+    </Text>,
+  )
+  lines.push(
+    <Text key="desc-text" wrap="truncate-end">
+      {truncateText(task.description, 500)}
     </Text>,
   )
 
@@ -113,17 +123,21 @@ function buildSummaryLines(
       </Text>,
     )
     lines.push(
-      <Text key="failure-text" color="red">
-        {failureReason}
+      <Text key="failure-text" color="red" wrap="truncate-end">
+        {truncateText(failureReason, 500)}
       </Text>,
     )
   }
 
   if (activeSlaves.length > 0) {
-    lines.push(<Text key="slaves-label">Active slave{activeSlaves.length > 1 ? 's' : ''}:</Text>)
+    lines.push(
+      <Text key="slaves-label" wrap="truncate-end">
+        Active slave{activeSlaves.length > 1 ? 's' : ''}:
+      </Text>,
+    )
     activeSlaves.forEach((slave, idx) => {
       lines.push(
-        <Text key={`slave-${slave.id}-${idx}`}>
+        <Text key={`slave-${slave.id}-${idx}`} wrap="truncate-end">
           {slave.id} ({slave.type}) <Text color="yellow">{slave.status}</Text> since{' '}
           {formatTime(slave.startedAt || '')}
         </Text>,
@@ -134,7 +148,7 @@ function buildSummaryLines(
   if (task.reviewHistory.length > 0) {
     const last = task.reviewHistory[task.reviewHistory.length - 1]
     lines.push(
-      <Text key="review-verdict">
+      <Text key="review-verdict" wrap="truncate-end">
         Last review:{' '}
         <Text
           color={
@@ -150,7 +164,11 @@ function buildSummaryLines(
         (confidence: {last.review.confidence})
       </Text>,
     )
-    lines.push(<Text key="review-summary"> {last.review.summary.slice(0, 100)}</Text>)
+    lines.push(
+      <Text key="review-summary" wrap="truncate-end">
+        {truncateText(last.review.summary, 500)}
+      </Text>,
+    )
   }
 
   return lines

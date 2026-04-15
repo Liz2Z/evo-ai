@@ -13,6 +13,7 @@ import type {
 } from '../types/events'
 import {
   commitAllChanges,
+  deleteBranch,
   ensureMissionWorkspace,
   getUncommittedDiff,
   hasUncommittedChanges,
@@ -23,15 +24,19 @@ import { addToGlobalBuffer, appendTaskLog, Logger } from '../utils/logger'
 import {
   addFailedTask,
   addHistoryEntry,
+  addMissionHistoryEntry,
   addQuestion,
   addTask,
   loadFailedTasks,
   loadHistory,
   loadMasterState,
+  loadMissionHistory,
   loadSlaves,
   loadTasks,
+  type MissionHistoryEntry,
   saveMasterState,
   saveSlaves,
+  updateMissionHistoryEntry,
   updateTask,
 } from '../utils/storage'
 import {
@@ -94,15 +99,17 @@ export class Master extends EventEmitter {
 
     const savedState = await loadMasterState()
     const tasks = await loadTasks()
+
     if (
       savedState.mission &&
       this.state.mission &&
       savedState.mission !== this.state.mission &&
       (Boolean(savedState.missionWorktree) || Boolean(savedState.currentTaskId) || tasks.length > 0)
     ) {
-      throw new Error(
-        `Single mission mode is active. Existing mission: ${savedState.mission}. Refusing to switch to: ${this.state.mission}`,
+      this.logger.warn(
+        `Saved mission differs from requested mission. Using saved: ${savedState.mission}`,
       )
+      this.state.mission = savedState.mission
     }
 
     this.state = {
@@ -219,20 +226,98 @@ export class Master extends EventEmitter {
     return { ...this.state }
   }
 
-  async setMission(mission: string): Promise<void> {
+  async setMission(mission: string, force = false): Promise<void> {
     const trimmed = mission.trim()
     if (!trimmed) {
       throw new Error('Mission cannot be empty')
     }
+
     if (this.state.mission && this.state.mission !== trimmed) {
       const tasks = await loadTasks()
-      if (tasks.length > 0 || this.state.missionWorktree || this.state.currentTaskId) {
-        throw new Error(`Single mission mode is active. Current mission: ${this.state.mission}`)
+      const hasActiveState =
+        tasks.length > 0 || this.state.missionWorktree || this.state.currentTaskId
+
+      if (hasActiveState && !force) {
+        throw new Error(
+          `Mission has active work. Use /mission --force to switch. Current: ${this.state.mission}`,
+        )
       }
+
+      if (hasActiveState && force) {
+        await this.cleanupCurrentMission()
+      }
+
+      await updateMissionHistoryEntry(this.state.mission, {
+        endedAt: new Date().toISOString(),
+      })
     }
+
+    const oldMission = this.state.mission
     this.state.mission = trimmed
     await saveMasterState(this.state)
     this.emitMasterState()
+
+    await addMissionHistoryEntry({
+      mission: trimmed,
+      startedAt: new Date().toISOString(),
+      worktreeBranch: this.state.missionBranch,
+      taskCount: (await loadTasks()).length,
+    })
+
+    await addHistoryEntry({
+      timestamp: new Date().toISOString(),
+      type: 'decision',
+      summary: `Mission switched to: ${trimmed}${oldMission ? ` (from: ${oldMission})` : ''}`,
+    })
+  }
+
+  private async cleanupCurrentMission(): Promise<void> {
+    const tasks = await loadTasks()
+
+    this.logger.info('Cleaning up current mission before switch...')
+
+    if (this.state.currentTaskId) {
+      this.logger.info(`Abandoning current task: ${this.state.currentTaskId}`)
+      await updateTask(this.state.currentTaskId, { status: 'failed' })
+      this.state.currentTaskId = undefined
+    }
+
+    const worktreeToRemove = this.state.missionWorktree
+    const branchToRemove = this.state.missionBranch
+
+    if (worktreeToRemove && branchToRemove) {
+      this.logger.info(`Removing mission worktree: ${worktreeToRemove}`)
+      await removeWorktree(worktreeToRemove)
+      await deleteBranch(branchToRemove)
+
+      this.state.missionWorktree = undefined
+      this.state.missionBranch = undefined
+
+      this.emit('worktree:change', {
+        mission: this.state.mission,
+        action: 'removed',
+        path: worktreeToRemove,
+        branch: branchToRemove,
+      } satisfies WorktreeChangeEvent)
+    }
+
+    for (const task of tasks) {
+      if (['pending', 'running', 'reviewing'].includes(task.status)) {
+        await updateTask(task.id, { status: 'failed' })
+      }
+    }
+
+    this.state.currentStage = 'idle'
+    this.state.turnStatus = 'idle'
+    this.state.currentPhase = 'idle'
+
+    await saveMasterState(this.state)
+
+    this.logger.info('Mission cleanup completed')
+  }
+
+  async getMissionHistory(): Promise<MissionHistoryEntry[]> {
+    return await loadMissionHistory()
   }
 
   private createRuntime(state: MasterState): MasterRuntime {
