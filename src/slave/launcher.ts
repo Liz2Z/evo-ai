@@ -82,6 +82,51 @@ function sanitizeModelTitle(input: string): string {
     .slice(0, 40)
 }
 
+function parseFirstJSONObject(text: string): Record<string, unknown> | null {
+  const trimmed = text.trim()
+  if (!trimmed) return null
+
+  const parseObject = (candidate: string): Record<string, unknown> | null => {
+    try {
+      const parsed = JSON.parse(candidate)
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null
+    } catch {
+      return null
+    }
+  }
+
+  const direct = parseObject(trimmed)
+  if (direct) return direct
+
+  const fencedRegex = /```(?:json)?\s*([\s\S]*?)```/gi
+  for (const match of trimmed.matchAll(fencedRegex)) {
+    const parsed = parseObject(match[1] || '')
+    if (parsed) return parsed
+  }
+
+  const objectLike = trimmed.match(/\{[\s\S]*\}/)
+  if (!objectLike) return null
+  return parseObject(objectLike[0])
+}
+
+function mapPartialTaskToTask(t: Partial<Task>): Task {
+  return {
+    id: generateTaskId(),
+    type: t.type || 'other',
+    status: 'pending' as const,
+    priority: t.priority || 3,
+    description: t.description || '',
+    context: t.context,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    attemptCount: 0,
+    maxAttempts: 3,
+    reviewHistory: [],
+  }
+}
+
 export interface SlaveOptions {
   type: SlaveType
   task: Task
@@ -274,6 +319,7 @@ export class SlaveLauncher {
       return [
         'Scan the repository and output ONLY valid JSON.',
         'Schema: {"tasks":[{"description":"...","type":"fix|feature|refactor|test|docs|other","priority":1-10,"context":"optional"}]}',
+        'Return a raw JSON object only. Do not wrap with markdown code fences.',
         "Never create low-value tasks that only add boilerplate comments or file headers (for example '// Auto-generated').",
         'Do not include markdown or explanations.',
       ].join('\n')
@@ -295,23 +341,25 @@ export class SlaveLauncher {
   }
 
   private async parseTaskResult(output: string): Promise<TaskResult> {
-    // Try to extract JSON from output
-    try {
-      const jsonMatch = output.match(/\{[\s\S]*\}/)
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0])
-        return {
-          taskId: this.task.id,
-          status: parsed.status || 'completed',
-          worktree: this.worktreePath || '',
-          branch: this.branch || '',
-          diff: '',
-          summary: parsed.summary || output,
-          filesChanged: parsed.filesChanged || [],
-        }
+    const parsed = parseFirstJSONObject(output)
+    if (parsed) {
+      const status =
+        typeof parsed.status === 'string' ? (parsed.status as TaskResult['status']) : 'completed'
+      const summary =
+        typeof parsed.summary === 'string' ? parsed.summary : JSON.stringify(parsed, null, 2)
+      const filesChanged = Array.isArray(parsed.filesChanged)
+        ? parsed.filesChanged.filter((item): item is string => typeof item === 'string')
+        : []
+
+      return {
+        taskId: this.task.id,
+        status,
+        worktree: this.worktreePath || '',
+        branch: this.branch || '',
+        diff: '',
+        summary,
+        filesChanged,
       }
-    } catch {
-      // JSON parsing failed, use raw output
     }
 
     // Get actual diff from git for worker tasks
@@ -337,21 +385,20 @@ export class SlaveLauncher {
   }
 
   private parseReviewResult(output: string): ReviewResult {
-    try {
-      const jsonMatch = output.match(/\{[\s\S]*\}/)
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0])
-        return {
-          taskId: this.task.id,
-          verdict: parsed.verdict || 'request_changes',
-          confidence: parsed.confidence || 0.5,
-          summary: parsed.summary || '',
-          issues: parsed.issues || [],
-          suggestions: parsed.suggestions || [],
-        }
+    const parsed = parseFirstJSONObject(output)
+    if (parsed) {
+      return {
+        taskId: this.task.id,
+        verdict: (parsed.verdict as ReviewResult['verdict']) || 'request_changes',
+        confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.5,
+        summary: typeof parsed.summary === 'string' ? parsed.summary : '',
+        issues: Array.isArray(parsed.issues)
+          ? parsed.issues.filter((item): item is string => typeof item === 'string')
+          : [],
+        suggestions: Array.isArray(parsed.suggestions)
+          ? parsed.suggestions.filter((item): item is string => typeof item === 'string')
+          : [],
       }
-    } catch {
-      // JSON parsing failed
     }
 
     // Default review result
@@ -455,54 +502,16 @@ export async function runInspector(mission: string, recentDecisions: string[]): 
     logger.info(
       `raw output (${raw.length} chars): ${raw.slice(0, 500)}${raw.length > 500 ? '...' : ''}`,
     )
-    try {
-      const parsed = JSON.parse(raw)
-      if (Array.isArray(parsed.tasks)) {
-        logger.info(`parsed ${parsed.tasks.length} task(s)`)
-        return parsed.tasks.map((t: Partial<Task>) => ({
-          id: generateTaskId(),
-          type: t.type || 'other',
-          status: 'pending' as const,
-          priority: t.priority || 3,
-          description: t.description || '',
-          context: t.context,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          attemptCount: 0,
-          maxAttempts: 3,
-          reviewHistory: [],
-        }))
-      }
-    } catch (e) {
-      logger.error(`JSON.parse failed (${e}), trying regex fallback`)
-      // Try to find tasks in the raw output
-      const taskMatch = raw.match(/"tasks"\s*:\s*\[[\s\S]*?\]/)
-      if (taskMatch) {
-        try {
-          const tasksJson = JSON.parse(`{${taskMatch[0]}}`)
-          if (Array.isArray(tasksJson.tasks)) {
-            logger.info(`regex fallback parsed ${tasksJson.tasks.length} task(s)`)
-            return tasksJson.tasks.map((t: Partial<Task>) => ({
-              id: generateTaskId(),
-              type: t.type || 'other',
-              status: 'pending' as const,
-              priority: t.priority || 3,
-              description: t.description || '',
-              context: t.context,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-              attemptCount: 0,
-              maxAttempts: 3,
-              reviewHistory: [],
-            }))
-          }
-        } catch {
-          logger.error('regex fallback JSON.parse also failed')
-        }
-      } else {
-        logger.error('no "tasks" key found in output')
-      }
+    const parsed = parseFirstJSONObject(raw)
+    if (parsed && Array.isArray(parsed.tasks)) {
+      const tasks = parsed.tasks.filter(
+        (item): item is Partial<Task> =>
+          Boolean(item) && typeof item === 'object' && !Array.isArray(item),
+      )
+      logger.info(`parsed ${tasks.length} task(s)`)
+      return tasks.map(mapPartialTaskToTask)
     }
+    logger.error('failed to parse inspector tasks JSON')
   }
 
   logger.info(`returning 0 tasks (result=${result ? 'present' : 'null'})`)

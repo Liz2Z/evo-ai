@@ -34,7 +34,6 @@ Scan the project thoroughly and generate actionable tasks. Focus on:
 
 When you find issues, output them as JSON tasks:
 
-```json
 {
   "tasks": [
     {
@@ -45,7 +44,11 @@ When you find issues, output them as JSON tasks:
     }
   ]
 }
-```
+
+Important:
+- Output a raw JSON object only.
+- Do not wrap JSON in markdown code fences.
+- Do not add explanations before or after JSON.
 
 ## Guidelines
 

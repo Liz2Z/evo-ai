@@ -360,9 +360,15 @@ export class Master extends EventEmitter {
   private scheduleHeartbeat(): void {
     if (!this.isRunning) return
     this.heartbeatTimer = setTimeout(() => {
-      void this.requestTurn('heartbeat')
-      this.scheduleHeartbeat()
+      void this.runHeartbeatTurn()
     }, this.config.heartbeatInterval)
+  }
+
+  private async runHeartbeatTurn(): Promise<void> {
+    if (!this.isRunning) return
+    await this.requestTurn('heartbeat')
+    if (!this.isRunning) return
+    this.scheduleHeartbeat()
   }
 
   private async requestTurn(reason: string): Promise<void> {

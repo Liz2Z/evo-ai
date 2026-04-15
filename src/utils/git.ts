@@ -1,20 +1,70 @@
 import { join } from 'node:path'
 import type { Task } from '../types'
 
+const FALLBACK_GIT_PATHS = ['/opt/homebrew/bin/git', '/usr/local/bin/git', '/usr/bin/git']
+let cachedGitBinary: string | null = null
+
+type GitExecResult = { stdout: string; stderr: string; exitCode: number; spawnError?: string }
+
+function execGitWithBinary(gitBinary: string, args: string[], cwd?: string): GitExecResult | null {
+  try {
+    const proc = Bun.spawnSync([gitBinary, ...args], {
+      cwd: cwd || process.cwd(),
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+
+    return {
+      stdout: proc.stdout.toString().trim(),
+      stderr: proc.stderr.toString().trim(),
+      exitCode: proc.exitCode,
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (message.includes('ENOENT')) {
+      return null
+    }
+    return {
+      stdout: '',
+      stderr: '',
+      exitCode: 127,
+      spawnError: message,
+    }
+  }
+}
+
+function candidateGitBinaries(): string[] {
+  const candidates = [
+    process.env.EVO_AI_GIT_BIN,
+    cachedGitBinary,
+    'git',
+    ...FALLBACK_GIT_PATHS,
+  ].filter((item): item is string => Boolean(item?.trim()))
+  return [...new Set(candidates)]
+}
+
 export async function runGit(
   args: string[],
   cwd?: string,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const proc = Bun.spawnSync(['git', ...args], {
-    cwd: cwd || process.cwd(),
-    stdout: 'pipe',
-    stderr: 'pipe',
-  })
+  let lastSpawnError = ''
+
+  for (const gitBinary of candidateGitBinaries()) {
+    const result = execGitWithBinary(gitBinary, args, cwd)
+    if (result === null) continue
+    cachedGitBinary = gitBinary
+    if (result.spawnError) {
+      lastSpawnError = result.spawnError
+    }
+    return { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode }
+  }
 
   return {
-    stdout: proc.stdout.toString().trim(),
-    stderr: proc.stderr.toString().trim(),
-    exitCode: proc.exitCode,
+    stdout: '',
+    stderr:
+      lastSpawnError ||
+      `Unable to execute git. Tried: ${candidateGitBinaries().join(', ')}. PATH=${process.env.PATH || '(empty)'}`,
+    exitCode: 127,
   }
 }
 
