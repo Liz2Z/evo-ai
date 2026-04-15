@@ -4,6 +4,7 @@ import type { LogEntry, MasterState, SlaveInfo, Task } from '../../types'
 import type {
   HeartbeatTickEvent,
   LogMessageEvent,
+  MasterActivityEvent,
   MasterStateEvent,
   TaskStatusChangeEvent,
 } from '../../types/events'
@@ -14,6 +15,11 @@ import {
   loadMasterState as loadState,
   loadTasks,
 } from '../../utils/storage'
+import {
+  formatHeartbeatDisplay,
+  type MasterActivityItem,
+  mergeMasterActivities,
+} from '../components/statusBarModel'
 
 export interface MasterStateData {
   tasks: Task[]
@@ -22,12 +28,17 @@ export interface MasterStateData {
   selectedTaskId: string | null
   lastHeartbeat: string
   phase: string
-  activeSlaves: number
-  pendingCount: number
+  heartbeatIntervalMs: number
+  heartbeatRemainingMs: number
+  heartbeatDisplay: string
+  masterActivities: MasterActivityItem[]
   logs: Map<string, LogEntry[]>
 }
 
-export function useMasterState(emitter: EventEmitter | null): MasterStateData & {
+export function useMasterState(
+  emitter: EventEmitter | null,
+  heartbeatIntervalMs: number,
+): MasterStateData & {
   selectTask: (taskId: string | null) => void
 } {
   const [tasks, setTasks] = useState<Task[]>([])
@@ -36,8 +47,11 @@ export function useMasterState(emitter: EventEmitter | null): MasterStateData & 
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [lastHeartbeat, setLastHeartbeat] = useState('')
   const [phase, setPhase] = useState('initializing')
-  const [activeSlaves, setActiveSlaves] = useState(0)
-  const [pendingCount, setPendingCount] = useState(0)
+  const [heartbeatRemainingMs, setHeartbeatRemainingMs] = useState(heartbeatIntervalMs)
+  const [heartbeatDisplay, setHeartbeatDisplay] = useState(
+    `--/${Math.ceil(heartbeatIntervalMs / 1000)}s`,
+  )
+  const [masterActivities, setMasterActivities] = useState<MasterActivityItem[]>([])
 
   const pollState = useCallback(async () => {
     try {
@@ -51,10 +65,21 @@ export function useMasterState(emitter: EventEmitter | null): MasterStateData & 
       setMasterState(loadedState)
       setPhase(loadedState.currentPhase || 'initializing')
       setLastHeartbeat(loadedState.lastHeartbeat || '')
-      setActiveSlaves(loadedSlaves.filter((s) => s.status === 'busy').length)
-      setPendingCount(loadedTasks.filter((t) => t.status === 'pending').length)
     } catch {}
   }, [])
+
+  const refreshHeartbeat = useCallback(
+    (currentPhase: string, heartbeatAt: string) => {
+      const next = formatHeartbeatDisplay({
+        phase: currentPhase,
+        lastHeartbeat: heartbeatAt,
+        heartbeatIntervalMs,
+      })
+      setHeartbeatRemainingMs(next.remainingMs)
+      setHeartbeatDisplay(next.display)
+    },
+    [heartbeatIntervalMs],
+  )
 
   useEffect(() => {
     pollState()
@@ -72,13 +97,23 @@ export function useMasterState(emitter: EventEmitter | null): MasterStateData & 
   }, [pollState])
 
   useEffect(() => {
+    refreshHeartbeat(phase, lastHeartbeat)
+    const interval = setInterval(() => {
+      refreshHeartbeat(phase, lastHeartbeat)
+    }, 1000)
+
+    return () => {
+      clearInterval(interval)
+    }
+  }, [phase, lastHeartbeat, refreshHeartbeat])
+
+  useEffect(() => {
     if (!emitter) return
 
     const onHeartbeat = (event: HeartbeatTickEvent) => {
       setLastHeartbeat(event.timestamp)
       setPhase(event.phase)
-      setActiveSlaves(event.activeSlaves)
-      setPendingCount(event.pendingCount)
+      refreshHeartbeat(event.phase, event.timestamp)
     }
 
     const onTaskChange = (_event: TaskStatusChangeEvent) => {
@@ -106,6 +141,7 @@ export function useMasterState(emitter: EventEmitter | null): MasterStateData & 
         currentTaskId: event.currentTaskId,
         currentStage: event.currentStage,
       })
+      refreshHeartbeat(event.phase, event.lastHeartbeat)
     }
 
     const onLogMessage = (event: LogMessageEvent) => {
@@ -121,18 +157,24 @@ export function useMasterState(emitter: EventEmitter | null): MasterStateData & 
       }
     }
 
+    const onMasterActivity = (event: MasterActivityEvent) => {
+      setMasterActivities((existing) => mergeMasterActivities(existing, event))
+    }
+
     emitter.on('heartbeat', onHeartbeat)
     emitter.on('task:status_change', onTaskChange)
     emitter.on('master:state', onMasterState)
     emitter.on('log:message', onLogMessage)
+    emitter.on('master:activity', onMasterActivity)
 
     return () => {
       emitter.off('heartbeat', onHeartbeat)
       emitter.off('task:status_change', onTaskChange)
       emitter.off('master:state', onMasterState)
       emitter.off('log:message', onLogMessage)
+      emitter.off('master:activity', onMasterActivity)
     }
-  }, [emitter, pollState])
+  }, [emitter, pollState, refreshHeartbeat])
 
   return {
     tasks,
@@ -141,8 +183,10 @@ export function useMasterState(emitter: EventEmitter | null): MasterStateData & 
     selectedTaskId,
     lastHeartbeat,
     phase,
-    activeSlaves,
-    pendingCount,
+    heartbeatIntervalMs,
+    heartbeatRemainingMs,
+    heartbeatDisplay,
+    masterActivities,
     logs: getGlobalLogBuffer(),
     selectTask: setSelectedTaskId,
   }

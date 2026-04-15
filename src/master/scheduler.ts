@@ -6,6 +6,7 @@ import type { Config, MasterState, Question, ReviewResult, Task, TaskResult } fr
 import type {
   HeartbeatTickEvent,
   LogMessageEvent,
+  MasterActivityEvent,
   MasterStateEvent,
   TaskStatusChangeEvent,
   WorktreeChangeEvent,
@@ -375,6 +376,13 @@ export class Master extends EventEmitter {
     if (this.currentTurnPromise) {
       this.state.skippedWakeups += 1
       this.state.lastSkippedTriggerReason = reason
+      this.emitMasterActivity({
+        timestamp: new Date().toISOString(),
+        triggerReason: reason,
+        summary: 'turn busy',
+        toolCalls: [],
+        kind: 'turn_skipped',
+      })
       this.writeHealthFile()
       await saveMasterState(this.state)
       this.emitMasterState()
@@ -406,6 +414,13 @@ export class Master extends EventEmitter {
     this.state.lastHeartbeat = new Date().toISOString()
     this.state.currentPhase = 'running'
     this.state.turnStatus = 'running'
+    this.emitMasterActivity({
+      timestamp: this.state.lastHeartbeat,
+      triggerReason: reason,
+      summary: `trigger=${reason}`,
+      toolCalls: [],
+      kind: 'turn_started',
+    })
     this.writeHealthFile()
     this.emitMasterState()
 
@@ -420,6 +435,13 @@ export class Master extends EventEmitter {
     try {
       const context = await this.buildRuntimeContext(reason)
       const result = await this.runtime.runTurn(context, this.tools)
+      this.emitMasterActivity({
+        timestamp: new Date().toISOString(),
+        triggerReason: reason,
+        summary: result.summary,
+        toolCalls: result.toolCalls,
+        kind: 'turn_completed',
+      })
 
       this.state.lastDecisionAt = new Date().toISOString()
       if (result.sessionSummary !== undefined) {
@@ -437,6 +459,13 @@ export class Master extends EventEmitter {
         },
       })
     } catch (error) {
+      this.emitMasterActivity({
+        timestamp: new Date().toISOString(),
+        triggerReason: reason,
+        summary: error instanceof Error ? error.message : String(error),
+        toolCalls: [],
+        kind: 'turn_failed',
+      })
       await addHistoryEntry({
         timestamp: new Date().toISOString(),
         type: 'error',
@@ -970,6 +999,10 @@ export class Master extends EventEmitter {
       currentTaskId: this.state.currentTaskId,
       currentStage: this.state.currentStage,
     } satisfies MasterStateEvent)
+  }
+
+  private emitMasterActivity(event: MasterActivityEvent): void {
+    this.emit('master:activity', event)
   }
 
   private checkControlFile(): void {

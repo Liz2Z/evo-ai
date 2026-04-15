@@ -205,6 +205,79 @@ describe('Master runtime driver', () => {
     }
   })
 
+  test('scheduler 会发出 master:activity(turn_completed)', async () => {
+    const runtimeFactory = () =>
+      ({
+        async init() {},
+        async runTurn() {
+          return {
+            summary: 'Worker assigned to task-1',
+            toolCalls: ['get_master_snapshot', 'assign_worker'],
+            unauthorizedToolCalls: [],
+          }
+        },
+        async dispose() {},
+      }) satisfies MasterRuntime
+
+    const master = new Master(baseConfig, 'test mission', { runtimeFactory })
+    const events: Array<{
+      kind: string
+      triggerReason: string
+      summary: string
+      toolCalls: string[]
+    }> = []
+    master.on('master:activity', (event) => events.push(event))
+
+    ;(master as any).isRunning = true
+    await (master as any).executeTurn('manual_test')
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'turn_completed',
+          triggerReason: 'manual_test',
+          summary: 'Worker assigned to task-1',
+          toolCalls: ['get_master_snapshot', 'assign_worker'],
+        }),
+      ]),
+    )
+  })
+
+  test('scheduler 会发出 master:activity(turn_skipped)', async () => {
+    const runtimeFactory = () =>
+      ({
+        async init() {},
+        async runTurn() {
+          return {
+            summary: 'turn',
+            toolCalls: [],
+            unauthorizedToolCalls: [],
+          }
+        },
+        async dispose() {},
+      }) satisfies MasterRuntime
+
+    const master = new Master(baseConfig, 'test mission', { runtimeFactory })
+    const events: Array<{ kind: string; triggerReason: string; summary: string }> = []
+    master.on('master:activity', (event) => events.push(event))
+
+    ;(master as any).isRunning = true
+    ;(master as any).currentTurnPromise = new Promise(() => {})
+    await (master as any).requestTurn('worker_completed')
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'turn_skipped',
+          triggerReason: 'worker_completed',
+          summary: 'turn busy',
+        }),
+      ]),
+    )
+
+    ;(master as any).currentTurnPromise = null
+  })
+
   test('MasterAgentAdapter 只允许 MasterTools 白名单', async () => {
     const adapter = new MasterAgentAdapter(async () => ({ summary: 'ok' }))
     const tools = createNoopTools()

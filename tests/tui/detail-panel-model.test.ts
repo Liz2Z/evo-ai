@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test'
-import { getActiveTaskSlaves, isActiveTask } from '../../src/tui/components/detailPanelModel'
+import {
+  getActiveTaskSlaves,
+  getTaskFailureReason,
+  isActiveTask,
+} from '../../src/tui/components/detailPanelModel'
 import type { SlaveInfo, Task } from '../../src/types'
 
 function task(status: Task['status']): Task {
@@ -45,5 +49,38 @@ describe('detailPanelModel', () => {
     ])
 
     expect(result.map((entry) => entry.id)).toEqual(['worker-1', 'worker-2'])
+  })
+
+  test('failed 任务优先从 context 中提取最后一条 Failure 原因', () => {
+    const failedTask = {
+      ...task('failed'),
+      context:
+        'Some context\n\nFailure: first reason\n\n## Previous Review Feedback\nSummary: retry\n\nFailure: final root cause',
+    }
+
+    expect(getTaskFailureReason(failedTask)).toBe('final root cause')
+  })
+
+  test('没有 Failure 段时，回退到最后一次 reject review summary', () => {
+    const failedTask = {
+      ...task('failed'),
+      reviewHistory: [
+        {
+          attempt: 1,
+          slaveId: 'reviewer-1',
+          timestamp: '2026-04-08T10:00:00.000Z',
+          review: {
+            taskId: 'task-1',
+            verdict: 'reject' as const,
+            confidence: 0.9,
+            summary: 'missing acceptance path',
+            issues: [],
+            suggestions: [],
+          },
+        },
+      ],
+    }
+
+    expect(getTaskFailureReason(failedTask)).toBe('missing acceptance path')
   })
 })

@@ -7,16 +7,17 @@ import { DetailPanel } from './DetailPanel'
 import { getActiveTaskSlaves } from './detailPanelModel'
 import { InputBar, useInputBar } from './InputBar'
 import { StatusBar } from './StatusBar'
+import { getStatusBarHeight } from './statusBarModel'
 import { TaskList } from './TaskList'
 
 interface KanbanBoardProps {
   emitter: Master | null
   master: Master | null
-  maxConcurrency: number
+  heartbeatIntervalMs: number
   onQuit: () => void
 }
 
-export function KanbanBoard({ emitter, master, maxConcurrency, onQuit }: KanbanBoardProps) {
+export function KanbanBoard({ emitter, master, heartbeatIntervalMs, onQuit }: KanbanBoardProps) {
   const { exit } = useApp()
   const { stdout } = useStdout()
   const [showLogs, setShowLogs] = useState(false)
@@ -28,11 +29,11 @@ export function KanbanBoard({ emitter, master, maxConcurrency, onQuit }: KanbanB
     slaves,
     masterState,
     selectedTaskId,
-    lastHeartbeat,
     phase,
-    activeSlaves: activeSlaveCount,
+    heartbeatDisplay,
+    masterActivities,
     selectTask,
-  } = useMasterState(emitter)
+  } = useMasterState(emitter, heartbeatIntervalMs)
 
   const selectedTask = tasks.find((t) => t.id === selectedTaskId) || null
   const activeTaskSlaves = getActiveTaskSlaves(selectedTaskId, slaves)
@@ -123,9 +124,8 @@ export function KanbanBoard({ emitter, master, maxConcurrency, onQuit }: KanbanB
   })
 
   // Calculate available height for main content
-  // Layout: StatusBar(3) + MainContent(N) + LastMsg(1) + InputBar(3) = total
   const termRows = stdout?.rows || 24
-  const fixedHeight = 3 + (lastMessage ? 1 : 0) + 3 // status + message + input
+  const fixedHeight = getStatusBarHeight() + (lastMessage ? 1 : 0) + 3
   const mainHeight = Math.max(8, termRows - fixedHeight)
 
   const questionPanelHeight = primaryQuestion ? 4 : 0
@@ -136,10 +136,10 @@ export function KanbanBoard({ emitter, master, maxConcurrency, onQuit }: KanbanB
       {/* Status bar */}
       <StatusBar
         phase={phase}
-        lastHeartbeat={lastHeartbeat}
-        activeSlaves={activeSlaveCount}
-        maxConcurrency={maxConcurrency}
+        stage={masterState?.currentStage || 'idle'}
+        heartbeatDisplay={heartbeatDisplay}
         pendingQuestions={pendingQuestions}
+        masterActivities={masterActivities}
       />
 
       {primaryQuestion && (

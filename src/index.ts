@@ -181,7 +181,7 @@ async function main() {
   const tuiInstance = startTUI({
     emitter: master,
     master,
-    maxConcurrency: 1,
+    heartbeatIntervalMs: config.heartbeatInterval,
     onQuit: async () => {
       await master.stop()
     },

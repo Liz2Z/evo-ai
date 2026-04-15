@@ -1,21 +1,20 @@
 import { render } from 'ink'
-import React from 'react'
 import type { Master } from '../master/scheduler'
 import { KanbanBoard } from './components/KanbanBoard'
 
 interface TUIOptions {
   emitter: Master | null
   master: Master | null
-  maxConcurrency: number
+  heartbeatIntervalMs: number
   onQuit: () => void
 }
 
-export function startTUI({ emitter, master, maxConcurrency, onQuit }: TUIOptions) {
+export function startTUI({ emitter, master, heartbeatIntervalMs, onQuit }: TUIOptions) {
   const App = () => (
     <KanbanBoard
       emitter={emitter}
       master={master}
-      maxConcurrency={maxConcurrency}
+      heartbeatIntervalMs={heartbeatIntervalMs}
       onQuit={onQuit}
     />
   )

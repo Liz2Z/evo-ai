@@ -1,7 +1,7 @@
 import { Box, Text } from 'ink'
 import type React from 'react'
 import type { LogEntry, MasterState, SlaveInfo, Task } from '../../types'
-import { isActiveTask } from './detailPanelModel'
+import { getTaskFailureReason, isActiveTask } from './detailPanelModel'
 
 interface DetailPanelProps {
   task: Task | null
@@ -104,6 +104,20 @@ function buildSummaryLines(
       {task.description.length > 120 ? '...' : ''}
     </Text>,
   )
+
+  const failureReason = task.status === 'failed' ? getTaskFailureReason(task) : null
+  if (failureReason) {
+    lines.push(
+      <Text key="failure-label" bold color="red">
+        Failure reason:
+      </Text>,
+    )
+    lines.push(
+      <Text key="failure-text" color="red">
+        {failureReason}
+      </Text>,
+    )
+  }
 
   if (activeSlaves.length > 0) {
     lines.push(<Text key="slaves-label">Active slave{activeSlaves.length > 1 ? 's' : ''}:</Text>)

@@ -16,6 +16,7 @@ export type EvoEventType =
   | 'log:message'
   | 'worktree:change'
   | 'master:state'
+  | 'master:activity'
   | 'projection:updated'
 
 export interface HeartbeatTickEvent {
@@ -75,6 +76,14 @@ export interface MasterStateEvent {
   currentStage: MasterStage
 }
 
+export interface MasterActivityEvent {
+  timestamp: string
+  triggerReason: string
+  summary: string
+  toolCalls: string[]
+  kind: 'turn_started' | 'turn_completed' | 'turn_failed' | 'turn_skipped'
+}
+
 export interface ProjectionUpdatedEvent {
   scope: string
   entityId?: string
@@ -88,4 +97,5 @@ export type EvoEvent =
   | LogMessageEvent
   | WorktreeChangeEvent
   | MasterStateEvent
+  | MasterActivityEvent
   | ProjectionUpdatedEvent
