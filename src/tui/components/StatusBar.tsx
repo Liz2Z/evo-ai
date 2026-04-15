@@ -3,6 +3,7 @@ import type { MasterStage } from '../../types'
 import type { MasterActivityItem } from './statusBarModel'
 
 interface StatusBarProps {
+  mission?: string
   phase: string
   stage: MasterStage
   heartbeatDisplay: string
@@ -42,6 +43,7 @@ function normalizeActivities(
 }
 
 export function StatusBar({
+  mission,
   phase,
   stage,
   heartbeatDisplay,
@@ -57,6 +59,12 @@ export function StatusBar({
           EVO-AI
         </Text>
         <Text> | </Text>
+        <Text>Mission: </Text>
+        <Text color={mission ? 'white' : 'gray'} wrap="truncate-end">
+          {mission || 'unset'}
+        </Text>
+      </Box>
+      <Box>
         <Text>Phase: </Text>
         <Text bold color={PHASE_COLORS[phase] || 'white'}>
           {phase}

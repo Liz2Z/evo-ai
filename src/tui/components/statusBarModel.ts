@@ -7,7 +7,7 @@ export interface MasterActivityItem {
 }
 
 const MAX_MASTER_ACTIVITIES = 3
-const STATUS_BAR_CONTENT_LINES = 5
+const STATUS_BAR_CONTENT_LINES = 6
 const STATUS_BAR_BORDER_LINES = 2
 
 export function getStatusBarHeight(): number {

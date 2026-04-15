@@ -148,6 +148,7 @@ export function KanbanBoard({ emitter, master, heartbeatIntervalMs, onQuit }: Ka
     <Box flexDirection="column">
       {/* Status bar */}
       <StatusBar
+        mission={masterState?.mission}
         phase={phase}
         stage={masterState?.currentStage || 'idle'}
         heartbeatDisplay={heartbeatDisplay}
