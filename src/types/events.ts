@@ -42,6 +42,7 @@ export interface SlaveStatusChangeEvent {
 export interface LogMessageEvent {
   slaveId: string
   taskId?: string
+  source: 'status' | 'agent_text' | 'tool_step'
   level: 'info' | 'error' | 'debug'
   message: string
   timestamp: string

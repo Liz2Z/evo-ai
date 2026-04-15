@@ -119,6 +119,7 @@ export interface LogEntry {
   timestamp: string
   slaveId: string
   taskId?: string
+  source: 'status' | 'agent_text' | 'tool_step'
   level: 'info' | 'error' | 'debug'
   message: string
 }

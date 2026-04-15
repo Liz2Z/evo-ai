@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import type { AgentSessionEvent } from '@mariozechner/pi-coding-agent'
 import { createCodingTools, createReadOnlyTools } from '@mariozechner/pi-coding-agent'
 import { createPiSession } from '../agent/pi'
 import { getConfiguredModel, settings } from '../config'
@@ -158,18 +159,23 @@ export class SlaveLauncher {
     this.onLog = options.onLog
   }
 
-  private log(level: 'info' | 'error' | 'debug', message: string): void {
+  private log(
+    level: 'info' | 'error' | 'debug',
+    message: string,
+    source: 'status' | 'agent_text' | 'tool_step' = 'status',
+  ): void {
     const event: LogMessageEvent = {
       slaveId: this.slaveId,
       taskId: this.task.id,
+      source,
       level,
       message,
       timestamp: new Date().toISOString(),
     }
     if (this.logger) {
-      if (level === 'error') this.logger.error(message)
-      else if (level === 'debug') this.logger.debug(message)
-      else this.logger.info(message)
+      if (level === 'error') this.logger.error(message, source)
+      else if (level === 'debug') this.logger.debug(message, source)
+      else this.logger.info(message, source)
     }
     if (this.onLog) {
       this.onLog(event)
@@ -239,6 +245,44 @@ export class SlaveLauncher {
       // Rate limit the API call
       await apiLimiter.acquire()
       let output = ''
+      let unsubscribe: (() => void) | null = null
+      let textBuffer = ''
+      const flushTextBuffer = (force = false) => {
+        if (!textBuffer) return
+        const lines = textBuffer.split('\n')
+        textBuffer = force ? '' : (lines.pop() ?? '')
+        const completeLines = force ? lines : lines
+        for (const line of completeLines) {
+          const message = line.trim()
+          if (!message) continue
+          this.log('info', message, 'agent_text')
+        }
+      }
+      const onSessionEvent = (event: AgentSessionEvent) => {
+        if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') {
+          textBuffer += event.assistantMessageEvent.delta
+          flushTextBuffer(false)
+          return
+        }
+
+        if (event.type === 'tool_execution_start') {
+          this.log('info', `Tool start: ${event.toolName}`, 'tool_step')
+          return
+        }
+
+        if (event.type === 'tool_execution_end') {
+          if (event.isError) {
+            this.log('error', `Tool failed: ${event.toolName}`, 'tool_step')
+            return
+          }
+          this.log('info', `Tool done: ${event.toolName}`, 'tool_step')
+          return
+        }
+
+        if (event.type === 'agent_end' || event.type === 'message_end') {
+          flushTextBuffer(true)
+        }
+      }
       try {
         this.log('info', `Calling model for ${this.type} task`)
         const modelId = slaveModel || config.models.pro
@@ -250,10 +294,13 @@ export class SlaveLauncher {
           modelId,
           tools,
         })
+        unsubscribe = session.subscribe(onSessionEvent)
 
         await session.prompt(`${fullSystemPrompt}\n\n${taskPrompt}`)
+        flushTextBuffer(true)
         output = session.getLastAssistantText() || ''
       } finally {
+        if (unsubscribe) unsubscribe()
         apiLimiter.release()
       }
 
@@ -545,6 +592,7 @@ export async function runWorker(
   recentDecisions: string[],
   additionalContext: string,
   baseBranch: string,
+  onLog?: (event: LogMessageEvent) => void,
 ): Promise<TaskResult | null> {
   const launcher = new SlaveLauncher({
     type: 'worker',
@@ -553,6 +601,7 @@ export async function runWorker(
     recentDecisions,
     additionalContext,
     baseBranch,
+    onLog,
   })
 
   await launcher.start()
@@ -564,6 +613,7 @@ export async function runReviewer(
   mission: string,
   recentDecisions: string[],
   diff: string,
+  onLog?: (event: LogMessageEvent) => void,
 ): Promise<ReviewResult | null> {
   const launcher = new SlaveLauncher({
     type: 'reviewer',
@@ -572,6 +622,7 @@ export async function runReviewer(
     recentDecisions,
     additionalContext: `## Code Changes to Review\n\`\`\`diff\n${diff}\n\`\`\``,
     worktreePath: task.worktree,
+    onLog,
   })
 
   await launcher.start()

@@ -49,6 +49,7 @@ export function useLogStream(
           timestamp: event.timestamp,
           slaveId: event.slaveId,
           taskId: event.taskId,
+          source: event.source,
           level: event.level,
           message: event.message,
         } satisfies LogEntry

@@ -1,7 +1,9 @@
 // Auto-generated
-import { describe, expect, test, mock } from 'bun:test'
-import { SlaveLauncher, runInspector, runWorker, runReviewer } from '../../src/slave/launcher'
-import type { Task, SlaveType, ReviewResult, TaskResult } from '../../src/types'
+import { describe, expect, mock, test } from 'bun:test'
+import type { AgentSessionEvent } from '@mariozechner/pi-coding-agent'
+import { runInspector, runReviewer, runWorker, SlaveLauncher } from '../../src/slave/launcher'
+import type { ReviewResult, Task, TaskResult } from '../../src/types'
+import type { LogMessageEvent } from '../../src/types/events'
 
 // Mock dependencies
 mock.module('@mariozechner/pi-coding-agent', () => ({
@@ -11,9 +13,35 @@ mock.module('@mariozechner/pi-coding-agent', () => ({
 
 mock.module('../../src/agent/pi', () => ({
   createPiSession: async ({ tools }) => {
+    const listeners: Array<(event: AgentSessionEvent) => void> = []
+
     return {
       session: {
         prompt: async () => {
+          for (const listener of listeners) {
+            listener({
+              type: 'tool_execution_start',
+              toolName: 'read',
+              toolCallId: 'tool-1',
+              args: {},
+            })
+            listener({
+              type: 'tool_execution_end',
+              toolName: 'read',
+              toolCallId: 'tool-1',
+              result: 'ok',
+              isError: false,
+            })
+            listener({
+              type: 'message_update',
+              assistantMessageEvent: {
+                type: 'text_delta',
+                delta: 'first line\nsecond line\n',
+              },
+            })
+            listener({ type: 'agent_end', messages: [] })
+          }
+
           // Return different outputs based on tools/cwd
           if (tools && tools.length > 0 && tools[0] === 'mock-coding-tool') {
             // Worker response
@@ -23,6 +51,13 @@ mock.module('../../src/agent/pi', () => ({
             return Promise.resolve()
           }
           return Promise.resolve()
+        },
+        subscribe: (listener: (event: AgentSessionEvent) => void) => {
+          listeners.push(listener)
+          return () => {
+            const index = listeners.indexOf(listener)
+            if (index >= 0) listeners.splice(index, 1)
+          }
         },
         getLastAssistantText: () => {
           if (tools && tools.length > 0) {
@@ -55,7 +90,7 @@ mock.module('../../src/agent/pi', () => ({
 }))
 
 mock.module('../../src/utils/git', () => ({
-  createWorktree: async (task, baseBranch, title, worktreesDir) => {
+  createWorktree: async (task, baseBranch, _title, _worktreesDir) => {
     if (baseBranch === 'invalid-branch') {
       return null
     }
@@ -64,28 +99,28 @@ mock.module('../../src/utils/git', () => ({
       branch: `task/${task.id.slice(-7)}`,
     }
   },
-  removeWorktree: async (path) => {
+  removeWorktree: async (_path) => {
     // Mock implementation
   },
-  getDiff: async (branch, baseBranch, worktreePath) => {
+  getDiff: async (_branch, _baseBranch, _worktreePath) => {
     return 'mock diff content'
   },
-  getChangedFiles: async (branch, baseBranch, worktreePath) => {
+  getChangedFiles: async (_branch, _baseBranch, _worktreePath) => {
     return ['src/test.ts', 'src/test2.ts']
   },
 }))
 
 mock.module('../../src/utils/storage', () => ({
-  updateSlave: async (slaveId, update) => {
+  updateSlave: async (_slaveId, _update) => {
     // Mock implementation
   },
-  addHistoryEntry: async (entry) => {
+  addHistoryEntry: async (_entry) => {
     // Mock implementation
   },
 }))
 
 mock.module('node:fs', () => ({
-  readFileSync: (path, encoding) => {
+  readFileSync: (path, _encoding) => {
     if (path.includes('inspector.md')) {
       return '# Inspector Prompt\nYou are an inspector.'
     } else if (path.includes('worker.md')) {
@@ -143,7 +178,7 @@ describe('SlaveLauncher - Rate Limiting', () => {
     })
 
     await launcher.start()
-    
+
     const startTime = Date.now()
     await launcher.execute()
     const firstCallDuration = Date.now() - startTime
@@ -167,23 +202,22 @@ describe('SlaveLauncher - Rate Limiting', () => {
       reviewHistory: [],
     }))
 
-    const launchers = tasks.map((task) => 
-      new SlaveLauncher({
-        type: 'worker',
-        task,
-        mission: 'Test concurrent execution',
-        recentDecisions: [],
-        baseBranch: 'develop',
-      })
+    const launchers = tasks.map(
+      (task) =>
+        new SlaveLauncher({
+          type: 'worker',
+          task,
+          mission: 'Test concurrent execution',
+          recentDecisions: [],
+          baseBranch: 'develop',
+        }),
     )
 
     // Start all launchers
     await Promise.all(launchers.map((l) => l.start()))
 
     // Execute all - rate limiter should enforce maxConcurrent limit
-    const results = await Promise.allSettled(
-      launchers.map((l) => l.execute())
-    )
+    const results = await Promise.allSettled(launchers.map((l) => l.execute()))
 
     // All should complete eventually
     expect(results.length).toBe(5)
@@ -215,7 +249,7 @@ describe('SlaveLauncher - Worktree Title Generation', () => {
     })
 
     await launcher.start()
-    const result = await launcher.execute() as TaskResult
+    const result = (await launcher.execute()) as TaskResult
 
     // Result should be successful
     expect(result).toBeDefined()
@@ -245,7 +279,7 @@ describe('SlaveLauncher - Worktree Title Generation', () => {
     })
 
     await launcher.start()
-    const result = await launcher.execute() as TaskResult
+    const result = (await launcher.execute()) as TaskResult
 
     expect(result).toBeDefined()
   })
@@ -256,8 +290,9 @@ describe('SlaveLauncher - Worktree Title Generation', () => {
       type: 'refactor',
       status: 'pending',
       priority: 3,
-      description: 'A very long description that should be truncated and sanitized properly ' + 
-                   'with special characters !@#$%^&*() and multiple   spaces',
+      description:
+        'A very long description that should be truncated and sanitized properly ' +
+        'with special characters !@#$%^&*() and multiple   spaces',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       attemptCount: 0,
@@ -274,7 +309,7 @@ describe('SlaveLauncher - Worktree Title Generation', () => {
     })
 
     await launcher.start()
-    const result = await launcher.execute() as TaskResult
+    const result = (await launcher.execute()) as TaskResult
 
     expect(result).toBeDefined()
     expect(result.status).toBe('completed')
@@ -305,7 +340,7 @@ describe('SlaveLauncher - Error Handling', () => {
     })
 
     await launcher.start()
-    const result = await launcher.execute() as TaskResult
+    const result = (await launcher.execute()) as TaskResult
 
     expect(result).toBeDefined()
     expect(result.status).toBe('failed')
@@ -328,8 +363,8 @@ describe('SlaveLauncher - Error Handling', () => {
 
     // Mock the session to return malformed JSON
     const { createPiSession } = await import('@mariozechner/pi-coding-agent')
-    const originalCreate = createPiSession
-    
+    const _originalCreate = createPiSession
+
     // This would need more sophisticated mocking to test properly
     // For now, we verify the launcher can be created
     const launcher = new SlaveLauncher({
@@ -366,7 +401,7 @@ describe('SlaveLauncher - Error Handling', () => {
     })
 
     await launcher.start()
-    const result = await launcher.execute() as ReviewResult
+    const result = (await launcher.execute()) as ReviewResult
 
     expect(result).toBeDefined()
     expect(result.taskId).toBe(task.id)
@@ -387,23 +422,23 @@ describe('SlaveLauncher - Error Handling', () => {
       reviewHistory: [],
     }
 
-    let errorHandled = false
+    let _errorHandled = false
     const launcher = new SlaveLauncher({
       type: 'worker',
       task,
       mission: 'Test error handling',
       recentDecisions: [],
       baseBranch: 'develop',
-      onError: (error) => {
-        errorHandled = true
+      onError: (_error) => {
+        _errorHandled = true
       },
     })
 
     await launcher.start()
-    
+
     // Execute should complete even if there are issues
     const result = await launcher.execute()
-    
+
     // Result or null is acceptable depending on error
     expect(result === null || result !== null).toBe(true)
   })
@@ -431,10 +466,10 @@ describe('SlaveLauncher - Error Handling', () => {
     })
 
     await launcher.start()
-    
+
     // Cancel should complete without error
     await launcher.cancel()
-    
+
     // Verify slave is in a clean state
     expect(launcher).toBeDefined()
   })
@@ -466,7 +501,7 @@ describe('SlaveLauncher - Context Building', () => {
     })
 
     await launcher.start()
-    const result = await launcher.execute() as TaskResult
+    const result = (await launcher.execute()) as TaskResult
 
     expect(result).toBeDefined()
     expect(result.taskId).toBe(task.id)
@@ -524,7 +559,7 @@ describe('SlaveLauncher - Result Parsing', () => {
     })
 
     await launcher.start()
-    const result = await launcher.execute() as TaskResult
+    const result = (await launcher.execute()) as TaskResult
 
     expect(result).toBeDefined()
     expect(result.taskId).toBe(task.id)
@@ -555,7 +590,7 @@ describe('SlaveLauncher - Result Parsing', () => {
     })
 
     await launcher.start()
-    const result = await launcher.execute() as ReviewResult
+    const result = (await launcher.execute()) as ReviewResult
 
     expect(result).toBeDefined()
     expect(result.taskId).toBe(task.id)
@@ -567,10 +602,10 @@ describe('SlaveLauncher - Result Parsing', () => {
 
 describe('Convenience Functions', () => {
   test('runInspector should return tasks array', async () => {
-    const tasks = await runInspector(
-      'Test inspection mission',
-      ['Recent decision 1', 'Recent decision 2']
-    )
+    const tasks = await runInspector('Test inspection mission', [
+      'Recent decision 1',
+      'Recent decision 2',
+    ])
 
     expect(Array.isArray(tasks)).toBe(true)
     if (tasks.length > 0) {
@@ -595,13 +630,7 @@ describe('Convenience Functions', () => {
       reviewHistory: [],
     }
 
-    const result = await runWorker(
-      task,
-      'Test mission',
-      [],
-      'Additional context',
-      'develop'
-    )
+    const result = await runWorker(task, 'Test mission', [], 'Additional context', 'develop')
 
     expect(result).toBeDefined()
     if (result) {
@@ -624,12 +653,7 @@ describe('Convenience Functions', () => {
       reviewHistory: [],
     }
 
-    const result = await runReviewer(
-      task,
-      'Test mission',
-      [],
-      'mock diff content'
-    )
+    const result = await runReviewer(task, 'Test mission', [], 'mock diff content')
 
     expect(result).toBeDefined()
     if (result) {
@@ -671,11 +695,11 @@ describe('SlaveLauncher - Logging', () => {
     })
 
     await launcher.start()
-    await launcher.execute() as TaskResult
+    ;(await launcher.execute()) as TaskResult
 
     // Should have logged some events
     expect(logEvents.length).toBeGreaterThan(0)
-    expect(logEvents.some(e => e.level === 'info')).toBe(true)
+    expect(logEvents.some((e) => e.level === 'info')).toBe(true)
   })
 
   test('should include slaveId and taskId in log events', async () => {
@@ -692,7 +716,7 @@ describe('SlaveLauncher - Logging', () => {
       reviewHistory: [],
     }
 
-    let capturedEvent: any = null
+    let capturedEvent: LogMessageEvent | null = null
 
     const launcher = new SlaveLauncher({
       type: 'worker',
@@ -701,19 +725,92 @@ describe('SlaveLauncher - Logging', () => {
       recentDecisions: [],
       baseBranch: 'develop',
       onLog: (event) => {
-        if (!capturedEvent) {
-          capturedEvent = event
-        }
+        capturedEvent ??= event
       },
     })
 
     await launcher.start()
-    
+    await launcher.execute()
+
     expect(capturedEvent).toBeDefined()
     if (capturedEvent) {
       expect(capturedEvent.slaveId).toBeDefined()
       expect(capturedEvent.taskId).toBe(task.id)
       expect(capturedEvent.timestamp).toBeDefined()
+      expect(capturedEvent.source).toBeDefined()
     }
+  })
+
+  test('should emit text_delta as agent_text logs and split by lines', async () => {
+    const task: Task = {
+      id: 'test-task-agent-text',
+      type: 'feature',
+      status: 'pending',
+      priority: 7,
+      description: 'Test agent text streaming',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      attemptCount: 0,
+      maxAttempts: 3,
+      reviewHistory: [],
+    }
+
+    const messages: string[] = []
+    const sources: string[] = []
+
+    const launcher = new SlaveLauncher({
+      type: 'worker',
+      task,
+      mission: 'Test stream logs',
+      recentDecisions: [],
+      baseBranch: 'develop',
+      onLog: (event) => {
+        messages.push(event.message)
+        sources.push(event.source)
+      },
+    })
+
+    await launcher.start()
+    await launcher.execute()
+
+    const agentTextMessages = messages.filter((_, i) => sources[i] === 'agent_text')
+    expect(agentTextMessages).toContain('first line')
+    expect(agentTextMessages).toContain('second line')
+  })
+
+  test('should emit tool execution events as tool_step logs', async () => {
+    const task: Task = {
+      id: 'test-task-tool-step',
+      type: 'fix',
+      status: 'pending',
+      priority: 5,
+      description: 'Test tool step logs',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      attemptCount: 0,
+      maxAttempts: 3,
+      reviewHistory: [],
+    }
+
+    const toolStepMessages: string[] = []
+
+    const launcher = new SlaveLauncher({
+      type: 'worker',
+      task,
+      mission: 'Test tool logs',
+      recentDecisions: [],
+      baseBranch: 'develop',
+      onLog: (event) => {
+        if (event.source === 'tool_step') {
+          toolStepMessages.push(event.message)
+        }
+      },
+    })
+
+    await launcher.start()
+    await launcher.execute()
+
+    expect(toolStepMessages.some((msg) => msg.includes('Tool start: read'))).toBe(true)
+    expect(toolStepMessages.some((msg) => msg.includes('Tool done: read'))).toBe(true)
   })
 })

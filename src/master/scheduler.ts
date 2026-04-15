@@ -3,9 +3,14 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { getControlFilePath, getHealthFilePath } from '../runtime/paths'
 import { runInspector, runReviewer, runWorker } from '../slave/launcher'
 import type { Config, MasterState, Question, ReviewResult, Task, TaskResult } from '../types'
-import type { HeartbeatTickEvent, MasterStateEvent, TaskStatusChangeEvent } from '../types/events'
+import type {
+  HeartbeatTickEvent,
+  LogMessageEvent,
+  MasterStateEvent,
+  TaskStatusChangeEvent,
+} from '../types/events'
 import { deleteBranch, getDiff, listWorktrees, mergeBranch, removeWorktree } from '../utils/git'
-import { Logger } from '../utils/logger'
+import { addToGlobalBuffer, appendTaskLog, Logger } from '../utils/logger'
 import {
   addFailedTask,
   addHistoryEntry,
@@ -604,8 +609,29 @@ export class Master extends EventEmitter {
     this.activeSlaves++
     const recentDecisions = await this.getRecentDecisions()
     const baseBranch = this.config.developBranch
+    const onLog = (event: LogMessageEvent) => {
+      this.emit('log:message', event)
+      if (!event.taskId) return
+      const entry = {
+        timestamp: event.timestamp,
+        slaveId: event.slaveId,
+        taskId: event.taskId,
+        source: event.source,
+        level: event.level,
+        message: event.message,
+      } as const
+      addToGlobalBuffer(event.taskId, entry)
+      void appendTaskLog(event.taskId, entry)
+    }
 
-    void runWorker(freshTask, this.state.mission, recentDecisions, additionalContext, baseBranch)
+    void runWorker(
+      freshTask,
+      this.state.mission,
+      recentDecisions,
+      additionalContext,
+      baseBranch,
+      onLog,
+    )
       .then(async (result) => {
         if (result) {
           await this.handleWorkerResult(freshTask, result)
@@ -722,8 +748,22 @@ export class Master extends EventEmitter {
 
     this.activeSlaves++
     const recentDecisions = await this.getRecentDecisions()
+    const onLog = (event: LogMessageEvent) => {
+      this.emit('log:message', event)
+      if (!event.taskId) return
+      const entry = {
+        timestamp: event.timestamp,
+        slaveId: event.slaveId,
+        taskId: event.taskId,
+        source: event.source,
+        level: event.level,
+        message: event.message,
+      } as const
+      addToGlobalBuffer(event.taskId, entry)
+      void appendTaskLog(event.taskId, entry)
+    }
 
-    void runReviewer(freshTask, this.state.mission, recentDecisions, diff)
+    void runReviewer(freshTask, this.state.mission, recentDecisions, diff, onLog)
       .then(async (result) => {
         if (result) {
           await this.handleReviewResult(freshTask, result)
@@ -1004,10 +1044,12 @@ export class Master extends EventEmitter {
               task.status,
             ),
         )
-        .map((task) => task.worktree!),
+        .map((task) => task.worktree),
     )
     for (const task of failedTasks.filter((item) => item.worktree)) {
-      activeWorktrees.add(task.worktree!)
+      if (task.worktree) {
+        activeWorktrees.add(task.worktree)
+      }
     }
 
     const allWorktrees = await listWorktrees()

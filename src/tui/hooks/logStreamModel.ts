@@ -1,12 +1,20 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { getRuntimeDataDir } from '../../runtime/paths'
 import type { LogEntry } from '../../types'
 import { getGlobalLogBuffer } from '../../utils/logger'
 
 export const DEFAULT_LOG_LIMIT = 200
 
 function logEntryKey(entry: LogEntry): string {
-  return [entry.timestamp, entry.slaveId, entry.taskId || '', entry.level, entry.message].join('|')
+  return [
+    entry.timestamp,
+    entry.slaveId,
+    entry.taskId || '',
+    entry.source,
+    entry.level,
+    entry.message,
+  ].join('|')
 }
 
 export function normalizeSlaveIds(slaveIds?: string[]): string[] | undefined {
@@ -27,7 +35,25 @@ export function parseLogFileContent(content: string): LogEntry[] {
     .filter(Boolean)
     .flatMap((line) => {
       try {
-        return [JSON.parse(line) as LogEntry]
+        const parsed = JSON.parse(line) as Partial<LogEntry>
+        if (
+          typeof parsed.timestamp !== 'string' ||
+          typeof parsed.slaveId !== 'string' ||
+          typeof parsed.level !== 'string' ||
+          typeof parsed.message !== 'string'
+        ) {
+          return []
+        }
+        return [
+          {
+            timestamp: parsed.timestamp,
+            slaveId: parsed.slaveId,
+            taskId: parsed.taskId,
+            source: parsed.source || 'status',
+            level: parsed.level as LogEntry['level'],
+            message: parsed.message,
+          } satisfies LogEntry,
+        ]
       } catch {
         return []
       }
@@ -62,7 +88,7 @@ export function appendLogEntry(
 
 export async function readPersistedTaskLogs(
   taskId: string,
-  logsDir = join(process.cwd(), 'data', 'logs'),
+  logsDir = join(getRuntimeDataDir(), 'logs'),
 ): Promise<LogEntry[]> {
   try {
     const filepath = join(logsDir, `${taskId}.log`)

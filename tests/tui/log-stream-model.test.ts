@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { getRuntimeDataDir } from '../../src/runtime/paths'
 import {
   loadTaskLogs,
   mergeLogEntries,
@@ -14,6 +15,7 @@ function logEntry(overrides: Partial<LogEntry>): LogEntry {
     timestamp: '2026-04-08T10:00:00.000Z',
     slaveId: 'worker-1',
     taskId: 'task-1',
+    source: 'status',
     level: 'info',
     message: 'hello',
     ...overrides,
@@ -74,11 +76,45 @@ describe('logStreamModel', () => {
     expect(logs[0].message).toBe('same line')
   })
 
+  test('同一条消息但不同 source 不会被误去重', () => {
+    const merged = mergeLogEntries([
+      [
+        logEntry({ source: 'status', message: 'same' }),
+        logEntry({ source: 'tool_step', message: 'same' }),
+      ],
+    ])
+
+    expect(merged).toHaveLength(2)
+    expect(merged.map((entry) => entry.source)).toEqual(['status', 'tool_step'])
+  })
+
   test('日志文件解析会忽略非法行', () => {
     const parsed = parseLogFileContent(
       [JSON.stringify(logEntry({ message: 'valid' })), 'not-json', ''].join('\n'),
     )
 
     expect(parsed.map((entry) => entry.message)).toEqual(['valid'])
+  })
+
+  test('默认从 runtime logs 路径读取持久化日志', async () => {
+    const originalCwd = process.cwd()
+    const sandboxDir = join(process.cwd(), 'tmp-test-runtime-logs')
+
+    await mkdir(sandboxDir, { recursive: true })
+    process.chdir(sandboxDir)
+    try {
+      const logsDir = join(getRuntimeDataDir(), 'logs')
+      await mkdir(logsDir, { recursive: true })
+      await writeFile(
+        join(logsDir, 'task-1.log'),
+        `${JSON.stringify(logEntry({ message: 'runtime' }))}\n`,
+      )
+
+      const logs = await loadTaskLogs('task-1', ['worker-1'])
+      expect(logs.map((entry) => entry.message)).toEqual(['runtime'])
+    } finally {
+      process.chdir(originalCwd)
+      await rm(sandboxDir, { recursive: true, force: true })
+    }
   })
 })

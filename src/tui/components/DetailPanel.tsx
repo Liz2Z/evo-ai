@@ -40,11 +40,17 @@ function renderLogLine(entry: LogEntry, showSlaveId: boolean) {
   )
 }
 
+function prioritizeLiveLogs(logs: LogEntry[]): LogEntry[] {
+  const primary = logs.filter((entry) => entry.source !== 'status')
+  const secondary = logs.filter((entry) => entry.source === 'status')
+  return [...primary, ...secondary]
+}
+
 function buildSummaryLines(task: Task, activeSlaves: SlaveInfo[]): React.ReactNode[] {
   const lines: React.ReactNode[] = []
 
   lines.push(
-    <Box>
+    <Box key="task-header">
       <Text bold>TASK: </Text>
       <Text bold color="cyan">
         {task.id.slice(-7)}
@@ -62,39 +68,39 @@ function buildSummaryLines(task: Task, activeSlaves: SlaveInfo[]): React.ReactNo
 
   if (task.branch) {
     lines.push(
-      <Text>
+      <Text key="branch">
         Branch: <Text color="cyan">{task.branch}</Text>
       </Text>,
     )
   }
   if (task.worktree) {
     lines.push(
-      <Text>
+      <Text key="worktree">
         Worktree: <Text color="gray">{task.worktree}</Text>
       </Text>,
     )
   }
   if (task.attemptCount > 0) {
     lines.push(
-      <Text>
+      <Text key="attempts">
         Attempts: {task.attemptCount}/{task.maxAttempts}
       </Text>,
     )
   }
 
-  lines.push(<Text bold>Description:</Text>)
+  lines.push(<Text key="desc-label">Description:</Text>)
   lines.push(
-    <Text>
+    <Text key="desc-text">
       {task.description.slice(0, 120)}
       {task.description.length > 120 ? '...' : ''}
     </Text>,
   )
 
   if (activeSlaves.length > 0) {
-    lines.push(<Text bold>Active slave{activeSlaves.length > 1 ? 's' : ''}:</Text>)
-    activeSlaves.forEach((slave) => {
+    lines.push(<Text key="slaves-label">Active slave{activeSlaves.length > 1 ? 's' : ''}:</Text>)
+    activeSlaves.forEach((slave, idx) => {
       lines.push(
-        <Text>
+        <Text key={`slave-${slave.id}-${idx}`}>
           {slave.id} ({slave.type}) <Text color="yellow">{slave.status}</Text> since{' '}
           {formatTime(slave.startedAt || '')}
         </Text>,
@@ -105,7 +111,7 @@ function buildSummaryLines(task: Task, activeSlaves: SlaveInfo[]): React.ReactNo
   if (task.reviewHistory.length > 0) {
     const last = task.reviewHistory[task.reviewHistory.length - 1]
     lines.push(
-      <Text>
+      <Text key="review-verdict">
         Last review:{' '}
         <Text
           color={
@@ -121,7 +127,7 @@ function buildSummaryLines(task: Task, activeSlaves: SlaveInfo[]): React.ReactNo
         (confidence: {last.review.confidence})
       </Text>,
     )
-    lines.push(<Text color="gray"> {last.review.summary.slice(0, 100)}</Text>)
+    lines.push(<Text key="review-summary"> {last.review.summary.slice(0, 100)}</Text>)
   }
 
   return lines
@@ -143,7 +149,11 @@ function renderFullLogView(task: Task, logs: LogEntry[], maxHeight: number) {
         {visibleLogs.length === 0 ? (
           <Text color="gray">No logs yet...</Text>
         ) : (
-          visibleLogs.map((entry, i) => <Box key={i}>{renderLogLine(entry, true)}</Box>)
+          visibleLogs.map((entry) => (
+            <Box key={`${entry.timestamp}-${entry.slaveId}-${entry.source}`}>
+              {renderLogLine(entry, true)}
+            </Box>
+          ))
         )}
       </Box>
     </Box>
@@ -175,16 +185,20 @@ export function DetailPanel({
   const showLiveLogs = isActiveTask(task)
 
   if (!showLiveLogs) {
-    const visible = [...summaryLines, <Text color="gray">Press 'l' to view full logs</Text>].slice(
-      0,
-      maxHeight,
-    )
+    const visible = [
+      ...summaryLines,
+      <Text key="view-hint" color="gray">
+        Press 'l' to view full logs
+      </Text>,
+    ].slice(0, maxHeight)
 
     return (
       <Box flexDirection="column">
-        {visible.map((line, i) => (
-          <Box key={i}>{line}</Box>
-        ))}
+        {visible.map((line) => {
+          const key =
+            React.isValidElement(line) && line.key ? String(line.key) : `static-${Math.random()}`
+          return <Box key={key}>{line}</Box>
+        })}
       </Box>
     )
   }
@@ -193,7 +207,7 @@ export function DetailPanel({
   const logHeight = Math.max(4, maxHeight - summaryHeight - 1)
   const visibleSummary = summaryLines.slice(0, summaryHeight - 1)
   const showSlaveId = activeSlaves.length !== 1
-  const visibleLiveLogs = liveLogs.slice(-(logHeight - 1))
+  const visibleLiveLogs = prioritizeLiveLogs(liveLogs).slice(-(logHeight - 1))
   const liveTitle =
     activeSlaves.length === 0
       ? 'LIVE LOGS: waiting for active slave [live]'
@@ -203,9 +217,12 @@ export function DetailPanel({
 
   return (
     <Box flexDirection="column">
-      {visibleSummary.map((line, i) => (
-        <Box key={`summary-${i}`}>{line}</Box>
-      ))}
+      {visibleSummary.map((line) => {
+        // Extract key from ReactElement if available, otherwise use index
+        const key =
+          React.isValidElement(line) && line.key ? String(line.key) : `summary-${Math.random()}`
+        return <Box key={key}>{line}</Box>
+      })}
       <Box>
         <Text bold color="cyan">
           {liveTitle}
@@ -217,8 +234,10 @@ export function DetailPanel({
       ) : visibleLiveLogs.length === 0 ? (
         <Text color="gray">Waiting for slave logs...</Text>
       ) : (
-        visibleLiveLogs.map((entry, i) => (
-          <Box key={`live-${i}`}>{renderLogLine(entry, showSlaveId)}</Box>
+        visibleLiveLogs.map((entry) => (
+          <Box key={`live-${entry.timestamp}-${entry.slaveId}-${entry.source}`}>
+            {renderLogLine(entry, showSlaveId)}
+          </Box>
         ))
       )}
       <Box>

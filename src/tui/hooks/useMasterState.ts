@@ -7,7 +7,7 @@ import type {
   MasterStateEvent,
   TaskStatusChangeEvent,
 } from '../../types/events'
-import { getGlobalLogBuffer } from '../../utils/logger'
+import { addToGlobalBuffer, getGlobalLogBuffer } from '../../utils/logger'
 import {
   getProjectionEmitter,
   loadSlaves,
@@ -116,18 +116,14 @@ export function useMasterState(emitter: EventEmitter | null): MasterStateData & 
 
     const onLogMessage = (event: LogMessageEvent) => {
       if (event.taskId) {
-        const buffer = getGlobalLogBuffer()
-        const existing = buffer.get(event.taskId) || []
-        buffer.set(event.taskId, [
-          ...existing,
-          {
-            timestamp: event.timestamp,
-            slaveId: event.slaveId,
-            taskId: event.taskId,
-            level: event.level,
-            message: event.message,
-          },
-        ])
+        addToGlobalBuffer(event.taskId, {
+          timestamp: event.timestamp,
+          slaveId: event.slaveId,
+          taskId: event.taskId,
+          source: event.source,
+          level: event.level,
+          message: event.message,
+        })
       }
     }
 

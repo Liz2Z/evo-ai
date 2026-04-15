@@ -8,24 +8,33 @@ import type { LogMessageEvent } from '../types/events'
 const MAX_BUFFER_SIZE = 500
 const LOGS_DIR = join(getRuntimeDataDir(), 'logs')
 
+function logEntryKey(entry: LogEntry): string {
+  return [
+    entry.timestamp,
+    entry.slaveId,
+    entry.taskId || '',
+    entry.source,
+    entry.level,
+    entry.message,
+  ].join('|')
+}
+
+export async function appendTaskLog(taskId: string, entry: LogEntry): Promise<void> {
+  await mkdir(LOGS_DIR, { recursive: true })
+  const filePath = join(LOGS_DIR, `${taskId}.log`)
+  await appendFile(filePath, `${JSON.stringify(entry)}\n`)
+}
+
 export class SlaveLogger {
   private buffers: Map<string, LogEntry[]> = new Map()
   private emitter: EventEmitter
   private slaveId: string
   private taskId?: string
-  private initialized = false
 
   constructor(emitter: EventEmitter, slaveId: string, taskId?: string) {
     this.emitter = emitter
     this.slaveId = slaveId
     this.taskId = taskId
-  }
-
-  private async ensureDir(): Promise<void> {
-    if (!this.initialized) {
-      await mkdir(LOGS_DIR, { recursive: true })
-      this.initialized = true
-    }
   }
 
   private async write(entry: LogEntry): Promise<void> {
@@ -43,6 +52,7 @@ export class SlaveLogger {
     const event: LogMessageEvent = {
       slaveId: this.slaveId,
       taskId: this.taskId,
+      source: entry.source,
       level: entry.level,
       message: entry.message,
       timestamp: entry.timestamp,
@@ -51,7 +61,7 @@ export class SlaveLogger {
 
     // Persist to file (non-blocking)
     if (this.taskId) {
-      this.persistToFile(this.taskId, entry).catch((err) => {
+      appendTaskLog(this.taskId, entry).catch((err) => {
         // Log persistence failure to stderr but don't throw
         if (entry.level === 'error') {
           // Avoid infinite recursion: only log persistence errors for non-error entries
@@ -61,37 +71,34 @@ export class SlaveLogger {
     }
   }
 
-  private async persistToFile(taskId: string, entry: LogEntry): Promise<void> {
-    await this.ensureDir()
-    const filePath = join(LOGS_DIR, `${taskId}.log`)
-    await appendFile(filePath, `${JSON.stringify(entry)}\n`)
-  }
-
-  info(message: string): void {
+  info(message: string, source: LogEntry['source'] = 'status'): void {
     this.write({
       timestamp: new Date().toISOString(),
       slaveId: this.slaveId,
       taskId: this.taskId,
+      source,
       level: 'info',
       message,
     })
   }
 
-  error(message: string): void {
+  error(message: string, source: LogEntry['source'] = 'status'): void {
     this.write({
       timestamp: new Date().toISOString(),
       slaveId: this.slaveId,
       taskId: this.taskId,
+      source,
       level: 'error',
       message,
     })
   }
 
-  debug(message: string): void {
+  debug(message: string, source: LogEntry['source'] = 'status'): void {
     this.write({
       timestamp: new Date().toISOString(),
       slaveId: this.slaveId,
       taskId: this.taskId,
+      source,
       level: 'debug',
       message,
     })
@@ -116,6 +123,10 @@ export function getGlobalLogBuffer(): Map<string, LogEntry[]> {
 
 export function addToGlobalBuffer(taskId: string, entry: LogEntry): void {
   const buffer = globalLogBuffer.get(taskId) || []
+  const key = logEntryKey(entry)
+  if (buffer.some((item) => logEntryKey(item) === key)) {
+    return
+  }
   buffer.push(entry)
   if (buffer.length > MAX_BUFFER_SIZE) {
     buffer.splice(0, buffer.length - MAX_BUFFER_SIZE)
