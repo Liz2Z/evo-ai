@@ -7,7 +7,7 @@ import { DetailPanel } from './DetailPanel'
 import { getActiveTaskSlaves } from './detailPanelModel'
 import { InputBar, useInputBar } from './InputBar'
 import { StatusBar } from './StatusBar'
-import { WorktreeList } from './WorktreeList'
+import { TaskList } from './TaskList'
 
 interface KanbanBoardProps {
   emitter: Master | null
@@ -170,12 +170,12 @@ export function KanbanBoard({ emitter, master, maxConcurrency, onQuit }: KanbanB
 
       {/* Main content */}
       <Box flexDirection="row" height={adjustedMainHeight}>
-        {/* Left panel - Worktree list */}
+        {/* Left panel - Task list */}
         <Box flexDirection="column" width={35} borderStyle="single" borderColor="gray" paddingX={1}>
           <Text bold color="cyan">
-            WORKTREES
+            TASKS
           </Text>
-          <WorktreeList
+          <TaskList
             tasks={tasks}
             selectedTaskId={selectedTaskId}
             onSelect={selectTask}

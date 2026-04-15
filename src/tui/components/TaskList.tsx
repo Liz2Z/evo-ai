@@ -1,9 +1,9 @@
 import { Box, Text, useInput } from 'ink'
 import type React from 'react'
 import type { Task } from '../../types'
-import { GROUP_ORDER, getGroupedTaskIds, getGroupKey } from './worktreeListModel'
+import { GROUP_ORDER, getGroupedTaskIds, getGroupKey } from './taskListModel'
 
-interface WorktreeListProps {
+interface TaskListProps {
   tasks: Task[]
   selectedTaskId: string | null
   onSelect: (taskId: string | null) => void
@@ -21,11 +21,11 @@ const STATUS_CONFIG: Record<string, { icon: string; color: string; label: string
   rejected: { icon: '✗', color: 'red', label: 'REJECTED' },
 }
 
-export function WorktreeList({ tasks, selectedTaskId, onSelect, maxHeight }: WorktreeListProps) {
+export function TaskList({ tasks, selectedTaskId, onSelect, maxHeight }: TaskListProps) {
   const flatIds = getGroupedTaskIds(tasks)
   const currentIndex = selectedTaskId ? flatIds.indexOf(selectedTaskId) : -1
 
-  useInput((input, key) => {
+  useInput((_input, key) => {
     if (key.upArrow) {
       const next = currentIndex > 0 ? currentIndex - 1 : 0
       onSelect(flatIds[next])

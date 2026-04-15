@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { getGroupedTaskIds } from '../../src/tui/components/worktreeListModel'
+import { getGroupedTaskIds } from '../../src/tui/components/taskListModel'
 import type { Task } from '../../src/types'
 
 function createTask(id: string, status: Task['status']): Task {
@@ -18,7 +18,7 @@ function createTask(id: string, status: Task['status']): Task {
   }
 }
 
-describe('worktreeListModel', () => {
+describe('taskListModel', () => {
   test('导航顺序应与分组渲染顺序一致，而不是原始 tasks 顺序', () => {
     const tasks: Task[] = [
       createTask('1', 'running'),
