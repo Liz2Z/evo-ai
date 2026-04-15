@@ -41,6 +41,7 @@ import {
   updateMissionHistoryEntry,
   updateTask,
 } from '../utils/storage'
+import { hasChineseCharacters } from '../utils/task-text'
 import {
   type CommitTaskResult,
   createMasterRuntime,
@@ -402,9 +403,14 @@ export class Master extends EventEmitter {
         return this.assignReviewer(task)
       },
       create_task: async ({ description, type = 'other', priority = 3, context }) => {
-        const task = await this.addTaskManually(description, type, priority)
+        const normalizedDescription = description.trim()
+        if (!hasChineseCharacters(normalizedDescription)) {
+          throw new Error('自动创建任务失败：任务描述必须使用中文')
+        }
+
+        const task = await this.addTaskManually(normalizedDescription, type, priority)
         if (context) {
-          const updated = await updateTask(task.id, { context })
+          const updated = await updateTask(task.id, { context: context.trim() })
           return updated || task
         }
         return task

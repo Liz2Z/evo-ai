@@ -10,6 +10,12 @@ interface TaskListProps {
   maxHeight: number
 }
 
+type TaskListLine = {
+  content: React.ReactNode
+  kind: 'spacer' | 'header' | 'task'
+  taskId?: string
+}
+
 const TASK_PANEL_WIDTH = 31
 
 const STATUS_CONFIG: Record<string, { icon: string; color: string; label: string }> = {
@@ -42,14 +48,15 @@ export function TaskList({ tasks, selectedTaskId, onSelect, maxHeight }: TaskLis
     grouped.set(key, group)
   }
 
-  const lines: { content: React.ReactNode; taskId?: string }[] = []
+  const lines: TaskListLine[] = []
   for (const status of GROUP_ORDER) {
     const group = grouped.get(status)
     if (!group || group.length === 0) continue
     const cfg = STATUS_CONFIG[status] || STATUS_CONFIG.pending
 
-    if (lines.length > 0) lines.push({ content: <Text> </Text> })
+    if (lines.length > 0) lines.push({ kind: 'spacer', content: <Text> </Text> })
     lines.push({
+      kind: 'header',
       content: (
         <Box width={TASK_PANEL_WIDTH}>
           <Text bold color={cfg.color} wrap="truncate-end">
@@ -61,6 +68,7 @@ export function TaskList({ tasks, selectedTaskId, onSelect, maxHeight }: TaskLis
 
     for (const task of group) {
       lines.push({
+        kind: 'task',
         taskId: task.id,
         content: (
           <Box width={TASK_PANEL_WIDTH}>
@@ -83,7 +91,22 @@ export function TaskList({ tasks, selectedTaskId, onSelect, maxHeight }: TaskLis
     let start = Math.max(0, (selectedIdx >= 0 ? selectedIdx : 0) - half)
     const end = Math.min(lines.length, start + maxHeight)
     start = Math.max(0, end - maxHeight)
+    while (start < lines.length && lines[start]?.kind === 'spacer') {
+      start++
+    }
+
     visibleLines = lines.slice(start, end)
+
+    if (visibleLines.length > 0 && visibleLines[0]?.kind !== 'header') {
+      let headerIdx = start - 1
+      while (headerIdx >= 0 && lines[headerIdx]?.kind !== 'header') {
+        headerIdx--
+      }
+
+      if (headerIdx >= 0) {
+        visibleLines = [lines[headerIdx], ...visibleLines.slice(0, Math.max(0, maxHeight - 1))]
+      }
+    }
   }
 
   return (

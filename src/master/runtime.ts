@@ -611,6 +611,7 @@ export function buildMasterSystemPrompt(): string {
   return [
     'You are the mission orchestration agent for this repository.',
     'Use only the provided MasterTools tools.',
+    'All newly created task descriptions must be written in Simplified Chinese.',
     'Mission mode constraints:',
     '1. Single mission only.',
     '2. Exactly one mission worktree/branch.',
@@ -661,6 +662,7 @@ export function buildMasterPrompt(context: MasterRuntimeContext, sessionHints: s
     '- All implementation changes must stay on the mission branch inside the mission worktree.',
     '- Only call commit_current_task after reviewer approval and only for the current reviewed task.',
     '- Do not merge to main/master/develop while the mission is still running.',
+    '- Any newly created task description must be in Simplified Chinese.',
     'Task summary:',
     taskSummary,
     'Pending human questions:',

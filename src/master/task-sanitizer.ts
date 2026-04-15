@@ -1,4 +1,5 @@
 import type { Task } from '../types'
+import { hasChineseCharacters } from '../utils/task-text'
 
 const ACTIVE_TASK_STATUSES = new Set<Task['status']>(['pending', 'running', 'reviewing'])
 
@@ -25,7 +26,13 @@ export interface SanitizedInspectorTasks {
   accepted: Task[]
   dropped: Array<{
     task: Task
-    reason: 'empty_description' | 'low_value' | 'duplicate' | 'missing_relevance' | 'over_limit'
+    reason:
+      | 'empty_description'
+      | 'low_value'
+      | 'non_chinese'
+      | 'duplicate'
+      | 'missing_relevance'
+      | 'over_limit'
   }>
 }
 
@@ -74,6 +81,11 @@ export function sanitizeInspectorTasks(
 
     if (isLowValueInspectorTask(task)) {
       dropped.push({ task, reason: 'low_value' })
+      continue
+    }
+
+    if (!hasChineseCharacters(description)) {
+      dropped.push({ task, reason: 'non_chinese' })
       continue
     }
 

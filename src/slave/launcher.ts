@@ -403,16 +403,17 @@ export class SlaveLauncher {
   private buildTaskPrompt(): string {
     if (this.type === 'inspector') {
       return [
-        'Inspect the code paths that matter most to the main mission and output ONLY valid JSON.',
+        '检查与主任务最相关的代码路径，只输出合法 JSON。',
         'Schema: {"tasks":[{"description":"...","type":"fix|feature|refactor|test|docs|other","priority":1-10,"context":"optional"}]}',
-        'Return a raw JSON object only. Do not wrap with markdown code fences.',
-        'Prioritize tasks that directly unblock, implement, or validate the main mission.',
-        'If the mission core appears complete, you may propose 1-2 adjacent high-value follow-up tasks in the same area.',
-        'Stay mission-scoped. Ignore unrelated cleanup, generic refactors, broad docs, dependency upgrades, and non-critical tests.',
-        'Return at most 3 tasks. Prefer 1-2 if possible.',
-        'Each task context must include either "Mission link:" or "Follow-up value:", plus concrete file/module scope.',
-        "Never create low-value tasks that only add boilerplate comments or file headers (for example '// Auto-generated').",
-        'Do not include markdown or explanations.',
+        '只返回原始 JSON 对象，不要使用 markdown code fence。',
+        '任务 description 必须使用简体中文，禁止输出英文任务标题。',
+        '优先输出直接阻塞、实现或验证主任务的事项。',
+        '如果主任务核心已基本完成，可以补充 1-2 个同区域的高价值后续任务。',
+        '保持 mission 范围内聚，忽略无关清理、泛化重构、宽泛文档、依赖升级和非关键测试。',
+        '最多返回 3 个任务，优先返回 1-2 个。',
+        '每个任务 context 必须使用中文，并包含“任务关联：”或“后续价值：”，同时写清楚具体文件、模块或代码路径。',
+        '禁止创建只加样板注释、文件头注释之类的低价值任务。',
+        '不要输出 markdown，不要附加解释。',
       ].join('\n')
     }
 
@@ -512,7 +513,7 @@ export async function runInspector(mission: string, recentDecisions: string[]): 
     type: 'other',
     status: 'running',
     priority: 1,
-    description: 'Scan the codebase for issues and improvements',
+    description: '检查代码库并生成后续任务',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     attemptCount: 0,
