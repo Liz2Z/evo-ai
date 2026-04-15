@@ -33,14 +33,14 @@ describe('taskListModel', () => {
     expect(getGroupedTaskIds(tasks)).toEqual(['1', '2', '3', '4', '7', '8', '9'])
   })
 
-  test('assigned 应并入 running 组导航', () => {
+  test('reviewing 应位于 pending 之前', () => {
     const tasks: Task[] = [
       createTask('1', 'pending'),
-      createTask('2', 'assigned'),
-      createTask('3', 'running'),
-      createTask('4', 'reviewing'),
+      createTask('2', 'running'),
+      createTask('3', 'reviewing'),
+      createTask('4', 'completed'),
     ]
 
-    expect(getGroupedTaskIds(tasks)).toEqual(['2', '3', '4', '1'])
+    expect(getGroupedTaskIds(tasks)).toEqual(['2', '3', '1', '4'])
   })
 })

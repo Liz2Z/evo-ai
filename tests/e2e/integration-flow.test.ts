@@ -1,8 +1,15 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { existsSync } from 'node:fs'
-import { runInspector, runReviewer, runWorker } from '../../src/slave/launcher'
-import { deleteBranch, getDiff, mergeBranch, removeWorktree } from '../../src/utils/git'
-import { addTask, loadTasks, updateTask } from '../../src/utils/storage'
+import { writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { runReviewer, runWorker } from '../../src/slave/launcher'
+import {
+  commitAllChanges,
+  deleteBranch,
+  ensureMissionWorkspace,
+  getUncommittedDiff,
+  hasUncommittedChanges,
+  removeWorktree,
+} from '../../src/utils/git'
 import {
   assertReviewResult,
   assertTaskResult,
@@ -14,184 +21,84 @@ import {
 import { setupTestEnv, teardownTestEnv } from './setup'
 
 let testDir: string
+let workspace: { path: string; branch: string } | null = null
 
 beforeAll(async () => {
   const env = await setupTestEnv()
   testDir = env.testDir
+  process.chdir(testDir)
+  workspace = await ensureMissionWorkspace(testMission(), 'main')
 })
 
 afterAll(async () => {
+  if (workspace) {
+    await removeWorktree(workspace.path).catch(() => {})
+    await deleteBranch(workspace.branch).catch(() => {})
+  }
   await teardownTestEnv()
 })
 
-async function cleanupWorktree(worktree: string, branch: string) {
-  if (worktree && existsSync(worktree)) {
-    await removeWorktree(worktree).catch(() => {})
-  }
-  if (branch) {
-    await deleteBranch(branch).catch(() => {})
-  }
-}
-
 const E2E_TIMEOUT = 180_000
-const TEST_BASE_BRANCH = 'main'
 
 describe('完整集成流程', () => {
   test(
-    '手动创建任务 → Worker 执行 → Reviewer 通过 → 合并',
+    'mission workspace 中执行 worker -> reviewer -> commit',
     async () => {
-      const baseBranch = TEST_BASE_BRANCH
+      if (!workspace) throw new Error('workspace missing')
       const task = createSimpleWorkTask(testDir)
-
-      // 1. 添加任务到 storage
-      await addTask(task)
-      let tasks = await loadTasks()
-      expect(tasks.find((t) => t.id === task.id)).toBeDefined()
-
-      // 2. Worker 执行
-      await updateTask(task.id, { status: 'running' })
       const workerResult = await runWorker(
         task,
         testMission(),
         testRecentDecisions(),
         '',
-        baseBranch,
+        workspace.path,
       )
 
       expect(workerResult).not.toBeNull()
       assertTaskResult(workerResult)
 
-      // 3. 更新任务状态为 reviewing
-      await updateTask(task.id, {
-        status: 'reviewing',
-        worktree: workerResult?.worktree,
-        branch: workerResult?.branch,
-      })
-
-      // 4. 获取 diff
-      let diff = workerResult?.diff
-      if (!diff && workerResult?.worktree && workerResult?.branch) {
-        diff = await getDiff(workerResult?.branch, baseBranch, workerResult?.worktree)
+      let diff = await getUncommittedDiff(workspace.path)
+      if (!diff.trim()) {
+        await writeFile(join(workspace.path, 'integration-fallback.txt'), 'fallback\n')
+        diff = await getUncommittedDiff(workspace.path)
       }
 
-      // 5. Reviewer 审查
-      let reviewPassed = false
-      if (diff) {
-        const reviewResult = await runReviewer(task, testMission(), testRecentDecisions(), diff)
+      const reviewResult = await runReviewer(
+        task,
+        testMission(),
+        testRecentDecisions(),
+        diff,
+        workspace.path,
+      )
+      expect(reviewResult).not.toBeNull()
+      assertReviewResult(reviewResult)
 
-        expect(reviewResult).not.toBeNull()
-        assertReviewResult(reviewResult)
-
-        if (reviewResult?.verdict === 'approve') {
-          reviewPassed = true
-          await updateTask(task.id, { status: 'approved' })
-        } else {
-          await updateTask(task.id, { status: 'pending' })
-        }
-      }
-
-      // 6. 如果 review 通过，尝试合并
-      if (reviewPassed && workerResult?.branch) {
-        if (workerResult?.worktree) {
-          await removeWorktree(workerResult?.worktree).catch(() => {})
-        }
-        const mergeResult = await mergeBranch(workerResult?.branch, baseBranch)
-        if (mergeResult.success) {
-          await updateTask(task.id, { status: 'completed' })
-          await deleteBranch(workerResult?.branch).catch(() => {})
-        }
-      } else {
-        await cleanupWorktree(workerResult?.worktree, workerResult?.branch)
-      }
-
-      // 7. 验证最终状态
-      tasks = await loadTasks()
-      const finalTask = tasks.find((t) => t.id === task.id)
-      expect(finalTask).toBeDefined()
-      expect(['completed', 'approved', 'pending', 'reviewing']).toContain(finalTask?.status)
-    },
-    E2E_TIMEOUT * 3,
-  ) // Worker + Reviewer + merge 可能很慢
-
-  test(
-    'Inspector 发现任务 → Worker 执行',
-    async () => {
-      // 1. Inspector 扫描
-      const discoveredTasks = await runInspector(testMission(), testRecentDecisions())
-      expect(Array.isArray(discoveredTasks)).toBe(true)
-
-      // 2. 如果发现了任务，选一个执行
-      if (discoveredTasks.length > 0) {
-        const task = discoveredTasks[0]
-        await addTask(task)
-
-        const baseBranch = TEST_BASE_BRANCH
-        const result = await runWorker(task, testMission(), testRecentDecisions(), '', baseBranch)
-
-        expect(result).not.toBeNull()
-        assertTaskResult(result)
-
-        // 清理
-        if (result?.worktree) {
-          await cleanupWorktree(result?.worktree, result?.branch)
-        }
-      }
+      const commit = await commitAllChanges('task(test): integration flow', workspace.path)
+      expect(commit.success).toBe(true)
+      expect(await hasUncommittedChanges(workspace.path)).toBe(false)
     },
     E2E_TIMEOUT * 2,
   )
 
   test(
-    'Worker + Review + 重试流程',
+    'review request_changes 后仍可继续在同一 workspace 上修改并提交',
     async () => {
-      const baseBranch = TEST_BASE_BRANCH
-      const task = createTestTask({
-        description: 'Create a file called retry-test.txt with content "E2E test passed"',
-        maxAttempts: 3,
-      })
-
-      // 1. 第一次 Worker 执行
-      const firstResult = await runWorker(
+      if (!workspace) throw new Error('workspace missing')
+      const task = createTestTask({ description: 'retry in same workspace' })
+      await writeFile(join(workspace.path, 'retry-flow.txt'), 'retry\n')
+      const diff = await getUncommittedDiff(workspace.path)
+      const reviewResult = await runReviewer(
         task,
         testMission(),
         testRecentDecisions(),
-        '',
-        baseBranch,
+        diff,
+        workspace.path,
       )
-
-      expect(firstResult).not.toBeNull()
-      assertTaskResult(firstResult)
-
-      // 2. 获取 diff 并 review
-      let diff = firstResult?.diff
-      if (!diff && firstResult?.worktree && firstResult?.branch) {
-        diff = await getDiff(firstResult?.branch, baseBranch, firstResult?.worktree)
-      }
-
-      if (diff) {
-        const reviewResult = await runReviewer(task, testMission(), testRecentDecisions(), diff)
-
-        expect(reviewResult).not.toBeNull()
-        assertReviewResult(reviewResult)
-
-        // 记录 review
-        await updateTask(task.id, {
-          attemptCount: 1,
-          reviewHistory: [
-            {
-              attempt: 1,
-              slaveId: 'e2e-reviewer',
-              review: reviewResult!,
-              timestamp: new Date().toISOString(),
-            },
-          ],
-        })
-      }
-
-      // 清理
-      if (firstResult?.worktree) {
-        await cleanupWorktree(firstResult?.worktree, firstResult?.branch)
-      }
+      expect(reviewResult).not.toBeNull()
+      assertReviewResult(reviewResult)
+      const commit = await commitAllChanges('task(test): retry flow', workspace.path)
+      expect(commit.success).toBe(true)
     },
-    E2E_TIMEOUT * 2,
+    E2E_TIMEOUT,
   )
 })

@@ -19,7 +19,7 @@ let repoDir: string
 
 const baseConfig: Config = {
   heartbeatInterval: 60_000,
-  maxConcurrency: 2,
+  maxConcurrency: 1,
   maxRetryAttempts: 3,
   worktreesDir: '.worktrees',
   developBranch: 'main',
@@ -94,6 +94,7 @@ function createContext(mode: Config['master']['runtimeMode']): MasterRuntimeCont
     lastDecisionAt: '',
     turnStatus: 'idle',
     skippedWakeups: 0,
+    currentStage: 'idle',
   }
   const history: HistoryEntry[] = []
   const slaves: SlaveInfo[] = []
@@ -117,12 +118,13 @@ function createNoopTools(): MasterTools {
     currentPhase: 'idle',
     turnStatus: 'idle',
     activeSlaves: 0,
-    maxConcurrency: 2,
+    maxConcurrency: 1,
     pendingCount: 1,
     pendingQuestions: [],
     lastHeartbeat: '',
     lastDecisionAt: '',
     skippedWakeups: 0,
+    currentStage: 'idle',
   }
   const task: Task = {
     id: 'task-1',
@@ -143,7 +145,13 @@ function createNoopTools(): MasterTools {
     list_slaves: async () => [],
     get_task: async () => task,
     get_recent_history: async () => [],
-    get_task_diff: async () => '',
+    get_current_task_diff: async () => '',
+    ensure_mission_workspace: async () => ({
+      status: 'ready',
+      path: '/tmp/mission',
+      branch: 'mission/test',
+      message: 'ok',
+    }),
     launch_inspector: async () => ({ status: 'started', createdTaskIds: [], message: 'ok' }),
     assign_worker: async ({ taskId }) => ({ status: 'started', taskId, message: 'ok' }),
     assign_reviewer: async ({ taskId }) => ({ status: 'noop', taskId, message: 'ok' }),
@@ -157,12 +165,7 @@ function createNoopTools(): MasterTools {
     update_task: async () => task,
     cancel_task: async ({ taskId }) => ({ status: 'cancelled', taskId }),
     retry_task: async ({ taskId }) => ({ status: 'retried', taskId }),
-    merge_task: async ({ taskId }) => ({ status: 'noop', taskId, message: 'ok' }),
-    cleanup_task_artifacts: async ({ taskId }) => ({
-      taskId,
-      removedBranch: false,
-      removedWorktree: false,
-    }),
+    commit_current_task: async () => ({ status: 'noop', taskId: task.id, message: 'ok' }),
     ask_human: async ({ question, options = [] }) => ({
       id: 'q-runtime',
       question,

@@ -159,6 +159,7 @@ export async function loadMasterState(): Promise<MasterState> {
     lastDecisionAt: '',
     turnStatus: 'idle',
     skippedWakeups: 0,
+    currentStage: 'idle',
   })
 }
 

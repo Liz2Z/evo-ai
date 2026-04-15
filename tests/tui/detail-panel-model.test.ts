@@ -30,8 +30,8 @@ function slave(overrides: Partial<SlaveInfo>): SlaveInfo {
 }
 
 describe('detailPanelModel', () => {
-  test('assigned 和 reviewing 任务应视为工作中', () => {
-    expect(isActiveTask(task('assigned'))).toBe(true)
+  test('running 和 reviewing 任务应视为工作中', () => {
+    expect(isActiveTask(task('running'))).toBe(true)
     expect(isActiveTask(task('reviewing'))).toBe(true)
     expect(isActiveTask(task('completed'))).toBe(false)
   })

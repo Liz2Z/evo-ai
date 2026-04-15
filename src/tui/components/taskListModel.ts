@@ -1,23 +1,13 @@
 import type { Task, TaskStatus } from '../../types'
 
-export const GROUP_ORDER: TaskStatus[] = [
-  'running',
-  'assigned',
-  'reviewing',
-  'pending',
-  'approved',
-  'completed',
-  'failed',
-  'rejected',
-]
+export const GROUP_ORDER: TaskStatus[] = ['running', 'reviewing', 'pending', 'completed', 'failed']
 
-export function getGroupKey(status: TaskStatus): string {
-  if (status === 'assigned') return 'running'
+export function getGroupKey(status: TaskStatus): TaskStatus {
   return status
 }
 
 export function getGroupedTaskIds(tasks: Task[]): string[] {
-  const grouped = new Map<string, Task[]>()
+  const grouped = new Map<TaskStatus, Task[]>()
 
   for (const task of tasks) {
     const key = getGroupKey(task.status)
@@ -27,15 +17,10 @@ export function getGroupedTaskIds(tasks: Task[]): string[] {
   }
 
   const orderedIds: string[] = []
-
   for (const status of GROUP_ORDER) {
     const group = grouped.get(status)
-    if (!group || group.length === 0) continue
-
-    for (const task of group) {
-      orderedIds.push(task.id)
-    }
+    if (!group) continue
+    for (const task of group) orderedIds.push(task.id)
   }
-
   return orderedIds
 }

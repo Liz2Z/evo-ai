@@ -38,6 +38,10 @@ export interface MasterSnapshot {
   skippedWakeups: number
   lastSkippedTriggerReason?: string
   runtimeSessionSummary?: string
+  missionBranch?: string
+  missionWorktree?: string
+  currentTaskId?: string
+  currentStage: MasterState['currentStage']
 }
 
 export interface MasterRuntimeTurnResult {
@@ -54,21 +58,22 @@ export interface WorkerAssignmentResult {
 }
 
 export interface ReviewerAssignmentResult {
-  status: 'started' | 'approved' | 'noop' | 'not_found'
+  status: 'started' | 'noop' | 'not_found'
   taskId: string
   message: string
 }
 
-export interface MergeTaskResult {
-  status: 'merged' | 'noop' | 'failed' | 'not_found'
-  taskId: string
+export interface CommitTaskResult {
+  status: 'committed' | 'noop' | 'failed' | 'not_found'
+  taskId?: string
   message: string
 }
 
-export interface CleanupArtifactsResult {
-  taskId: string
-  removedWorktree: boolean
-  removedBranch: boolean
+export interface MissionWorkspaceResult {
+  status: 'ready' | 'failed'
+  path?: string
+  branch?: string
+  message: string
 }
 
 export interface MasterTools {
@@ -77,7 +82,8 @@ export interface MasterTools {
   list_slaves(): Promise<SlaveInfo[]>
   get_task(input: { taskId: string }): Promise<Task | null>
   get_recent_history(input?: { limit?: number }): Promise<HistoryEntry[]>
-  get_task_diff(input: { taskId?: string; branch?: string }): Promise<string>
+  get_current_task_diff(): Promise<string>
+  ensure_mission_workspace(): Promise<MissionWorkspaceResult>
   launch_inspector(input: { reason: string }): Promise<{
     status: 'started' | 'noop'
     createdTaskIds: string[]
@@ -100,8 +106,7 @@ export interface MasterTools {
     taskId: string
     additionalContext?: string
   }): Promise<{ status: 'retried' | 'noop' | 'not_found'; taskId: string }>
-  merge_task(input: { taskId: string }): Promise<MergeTaskResult>
-  cleanup_task_artifacts(input: { taskId: string }): Promise<CleanupArtifactsResult>
+  commit_current_task(): Promise<CommitTaskResult>
   ask_human(input: { question: string; options?: string[] }): Promise<Question>
 }
 
@@ -121,16 +126,7 @@ export type ClaudeMasterExecutor = (params: {
   allowedToolNames: Set<keyof MasterTools>
 }) => Promise<{ summary: string; sessionId?: string }>
 
-const TASK_STATUSES = [
-  'pending',
-  'assigned',
-  'running',
-  'completed',
-  'failed',
-  'reviewing',
-  'approved',
-  'rejected',
-] as const
+const TASK_STATUSES = ['pending', 'running', 'reviewing', 'completed', 'failed'] as const
 const TASK_TYPES = ['fix', 'feature', 'refactor', 'test', 'docs', 'other'] as const
 
 export class MasterAgentAdapter {
@@ -140,7 +136,8 @@ export class MasterAgentAdapter {
     'list_slaves',
     'get_task',
     'get_recent_history',
-    'get_task_diff',
+    'get_current_task_diff',
+    'ensure_mission_workspace',
     'launch_inspector',
     'assign_worker',
     'assign_reviewer',
@@ -148,8 +145,7 @@ export class MasterAgentAdapter {
     'update_task',
     'cancel_task',
     'retry_task',
-    'merge_task',
-    'cleanup_task_artifacts',
+    'commit_current_task',
     'ask_human',
   ])
 
@@ -264,9 +260,7 @@ class SessionAgentRuntime implements MasterRuntime {
 
   constructor(adapter?: MasterAgentAdapter, initialSummary?: string) {
     this.adapter = adapter || new MasterAgentAdapter()
-    if (initialSummary) {
-      this.sessionHints.push(initialSummary)
-    }
+    if (initialSummary) this.sessionHints.push(initialSummary)
   }
 
   async init(_context: MasterRuntimeContext, _tools: MasterTools): Promise<void> {}
@@ -311,9 +305,19 @@ class HybridMasterRuntime implements MasterRuntime {
 
     const snapshot = await tools.get_master_snapshot()
     toolCalls.push('get_master_snapshot')
+
+    const workspace = await tools.ensure_mission_workspace()
+    toolCalls.push('ensure_mission_workspace')
+    if (workspace.status === 'failed') {
+      return {
+        summary: `Mission workspace failed: ${workspace.message}`,
+        toolCalls,
+        unauthorizedToolCalls,
+      }
+    }
+
     const unansweredQuestions = snapshot.pendingQuestions.filter((q) => !q.answered)
     const pendingQuestionTexts = unansweredQuestions.map((q) => q.question)
-
     const decision = await decisionEngine.decide({
       mission: context.mission,
       recentHistory: context.recentHistory,
@@ -329,68 +333,92 @@ class HybridMasterRuntime implements MasterRuntime {
       toolCalls.push('ask_human')
     }
 
-    if (decision.action === 'pause') {
-      return {
-        summary: `Hybrid runtime paused: ${decision.reason}`,
-        toolCalls,
-        unauthorizedToolCalls,
+    if (snapshot.currentTaskId) {
+      const currentTask = context.tasks.find((task) => task.id === snapshot.currentTaskId)
+      if (!currentTask) {
+        return {
+          summary: 'Current task pointer is stale',
+          toolCalls,
+          unauthorizedToolCalls,
+        }
       }
-    }
 
-    let activeSlaves = snapshot.activeSlaves
-    const reviewingTasks = decisionEngine.prioritizeTasks(
-      context.tasks.filter((task) => task.status === 'reviewing').slice(),
-    )
-    for (const task of reviewingTasks) {
-      if (activeSlaves >= context.config.maxConcurrency) break
-      const result = await tools.assign_reviewer({ taskId: task.id })
-      toolCalls.push('assign_reviewer')
-      if (result.status === 'started') {
-        activeSlaves++
+      if (snapshot.currentStage === 'committing') {
+        await tools.commit_current_task()
+        toolCalls.push('commit_current_task')
+        return {
+          summary: `Committed task ${currentTask.id}`,
+          toolCalls,
+          unauthorizedToolCalls,
+        }
       }
-    }
 
-    const approvedTasks = context.tasks.filter((task) => task.status === 'approved')
-    for (const task of approvedTasks) {
-      await tools.merge_task({ taskId: task.id })
-      toolCalls.push('merge_task')
+      if (snapshot.activeSlaves > 0) {
+        return {
+          summary: `Waiting for active slave on task ${currentTask.id}`,
+          toolCalls,
+          unauthorizedToolCalls,
+        }
+      }
+
+      if (currentTask.status === 'reviewing') {
+        await tools.assign_reviewer({ taskId: currentTask.id })
+        toolCalls.push('assign_reviewer')
+        return {
+          summary: `Reviewer assigned to ${currentTask.id}`,
+          toolCalls,
+          unauthorizedToolCalls,
+        }
+      }
+
+      if (currentTask.status === 'running' || currentTask.status === 'pending') {
+        await tools.assign_worker({ taskId: currentTask.id })
+        toolCalls.push('assign_worker')
+        return {
+          summary: `Worker assigned to ${currentTask.id}`,
+          toolCalls,
+          unauthorizedToolCalls,
+        }
+      }
     }
 
     const pendingTasks = decisionEngine.prioritizeTasks(
       context.tasks.filter((task) => task.status === 'pending').slice(),
     )
-    for (const task of pendingTasks) {
-      if (activeSlaves >= context.config.maxConcurrency) break
-      const result = await tools.assign_worker({ taskId: task.id })
+    if (snapshot.activeSlaves === 0 && pendingTasks.length > 0) {
+      await tools.assign_worker({ taskId: pendingTasks[0].id })
       toolCalls.push('assign_worker')
-      if (result.status === 'started') {
-        activeSlaves++
+      return {
+        summary: `Worker assigned to ${pendingTasks[0].id}`,
+        toolCalls,
+        unauthorizedToolCalls,
       }
     }
 
-    const activeTasks = context.tasks.filter((task) =>
-      ['pending', 'assigned', 'running', 'reviewing', 'approved'].includes(task.status),
-    )
-    if (
-      activeTasks.length === 0 &&
+    const shouldInspect =
+      snapshot.activeSlaves === 0 &&
+      !snapshot.currentTaskId &&
+      context.tasks.filter((task) => ['pending', 'running', 'reviewing'].includes(task.status))
+        .length === 0 &&
       decisionEngine.shouldInspect({
         mission: context.mission,
         recentHistory: context.recentHistory,
         currentTasks: context.tasks,
         pendingQuestions: pendingQuestionTexts,
       })
-    ) {
-      await tools.launch_inspector({
-        reason: `trigger=${context.triggerReason}`,
-      })
+
+    if (shouldInspect) {
+      await tools.launch_inspector({ reason: `trigger=${context.triggerReason}` })
       toolCalls.push('launch_inspector')
+      return {
+        summary: 'Inspector launched',
+        toolCalls,
+        unauthorizedToolCalls,
+      }
     }
 
     return {
-      summary:
-        unansweredQuestions.length > 0
-          ? `Hybrid runtime completed one orchestration turn with ${unansweredQuestions.length} pending question(s)`
-          : 'Hybrid runtime completed one orchestration turn',
+      summary: 'Hybrid runtime idle',
       toolCalls,
       unauthorizedToolCalls,
     }
@@ -407,12 +435,8 @@ export function createMasterRuntime(
 ): MasterRuntime {
   const adapter = options?.agentExecutor ? new MasterAgentAdapter(options.agentExecutor) : undefined
 
-  if (mode === 'heartbeat_agent') {
-    return new HeartbeatAgentRuntime(adapter)
-  }
-  if (mode === 'session_agent') {
-    return new SessionAgentRuntime(adapter, state.runtimeSessionSummary)
-  }
+  if (mode === 'heartbeat_agent') return new HeartbeatAgentRuntime(adapter)
+  if (mode === 'session_agent') return new SessionAgentRuntime(adapter, state.runtimeSessionSummary)
   return new HybridMasterRuntime()
 }
 
@@ -496,12 +520,14 @@ function buildMasterPiTools(
     Type.Object({ limit: Type.Optional(Type.Number({ minimum: 1 })) }),
   )
   pushTool(
-    'get_task_diff',
-    'Get diff for a task or branch.',
-    Type.Object({
-      taskId: Type.Optional(Type.String()),
-      branch: Type.Optional(Type.String()),
-    }),
+    'get_current_task_diff',
+    'Get uncommitted diff for the current mission workspace.',
+    Type.Object({}),
+  )
+  pushTool(
+    'ensure_mission_workspace',
+    'Ensure the mission worktree and branch exist.',
+    Type.Object({}),
   )
   pushTool(
     'launch_inspector',
@@ -510,7 +536,7 @@ function buildMasterPiTools(
   )
   pushTool(
     'assign_worker',
-    'Assign a worker to a pending task.',
+    'Assign a worker to a task in the mission workspace.',
     Type.Object({
       taskId: Type.String(),
       additionalContext: Type.Optional(Type.String()),
@@ -518,7 +544,7 @@ function buildMasterPiTools(
   )
   pushTool(
     'assign_reviewer',
-    'Assign a reviewer to a reviewing task.',
+    'Assign a reviewer to the current task diff.',
     Type.Object({ taskId: Type.String() }),
   )
   pushTool(
@@ -542,21 +568,16 @@ function buildMasterPiTools(
   pushTool('cancel_task', 'Cancel a task.', Type.Object({ taskId: Type.String() }))
   pushTool(
     'retry_task',
-    'Retry a failed or rejected task.',
+    'Retry a failed task.',
     Type.Object({
       taskId: Type.String(),
       additionalContext: Type.Optional(Type.String()),
     }),
   )
   pushTool(
-    'merge_task',
-    'Merge an approved task into the develop branch.',
-    Type.Object({ taskId: Type.String() }),
-  )
-  pushTool(
-    'cleanup_task_artifacts',
-    'Clean up branch and worktree artifacts for a task.',
-    Type.Object({ taskId: Type.String() }),
+    'commit_current_task',
+    'Commit the current task changes in the mission workspace.',
+    Type.Object({}),
   )
   pushTool(
     'ask_human',
@@ -585,14 +606,13 @@ function asPiToolResult(value: unknown) {
 
 function buildMasterSystemPrompt(): string {
   return [
-    'You are the master orchestration agent for this repository.',
+    'You are the mission orchestration agent for this repository.',
     'Use only the provided MasterTools tools.',
-    'Primary goals by priority:',
-    '1. Move reviewing tasks forward.',
-    '2. Merge approved tasks.',
-    '3. Dispatch pending tasks within concurrency limits.',
-    '4. If nothing is active, launch inspection to discover new work.',
-    '5. Ask human only when blocked by ambiguity or repeated failure.',
+    'Mission mode constraints:',
+    '1. Single mission only.',
+    '2. Exactly one mission worktree/branch.',
+    '3. Exactly one active slave at a time.',
+    '4. The current task must finish review and commit before the next task starts.',
     'Be concise and tool-driven.',
   ].join('\n')
 }
@@ -620,46 +640,24 @@ function buildMasterPrompt(context: MasterRuntimeContext, sessionHints: string[]
     sessionHints.length > 0
       ? sessionHints
           .slice(-8)
-          .map((item) => `- ${item}`)
+          .map((hint) => `- ${hint}`)
           .join('\n')
-      : '- none'
+      : 'none'
 
   return [
-    `Current time: ${context.timestamp}`,
-    `Trigger reason: ${context.triggerReason}`,
     `Mission: ${context.mission}`,
-    '',
-    'Master state:',
-    `- phase: ${context.masterState.currentPhase}`,
-    `- turnStatus: ${context.masterState.turnStatus}`,
-    `- skippedWakeups: ${context.masterState.skippedWakeups}`,
-    '',
-    'Task counts:',
+    `Current stage: ${context.masterState.currentStage}`,
+    `Current task: ${context.masterState.currentTaskId || 'none'}`,
+    `Mission branch: ${context.masterState.missionBranch || 'unset'}`,
+    `Mission worktree: ${context.masterState.missionWorktree || 'unset'}`,
+    'Task summary:',
     taskSummary,
-    '',
     'Pending human questions:',
     pendingQuestions,
-    '',
     'Recent history:',
     recentHistory,
-    '',
     'Session hints:',
     hintBlock,
-    '',
-    'Use MasterTools only. Decide the next best orchestration actions and execute them.',
-  ].join('\n')
-}
-
-function buildSessionSummary(
-  context: MasterRuntimeContext,
-  toolCalls: string[],
-  sessionHints: string[],
-): string {
-  return [
-    `mode=${context.config.master.runtimeMode}`,
-    `trigger=${context.triggerReason}`,
-    `tools=${toolCalls.join(',') || 'none'}`,
-    `hints=${sessionHints.slice(-3).join(' | ') || 'none'}`,
   ].join('\n')
 }
 
@@ -668,4 +666,18 @@ function groupTaskCounts(tasks: Task[]): Record<string, number> {
     acc[task.status] = (acc[task.status] || 0) + 1
     return acc
   }, {})
+}
+
+function buildSessionSummary(
+  context: MasterRuntimeContext,
+  toolCalls: string[],
+  sessionHints: string[],
+): string {
+  return [
+    `mission=${context.mission}`,
+    `stage=${context.masterState.currentStage}`,
+    `currentTask=${context.masterState.currentTaskId || 'none'}`,
+    `toolCalls=${toolCalls.join(',') || 'none'}`,
+    `hints=${sessionHints.slice(-5).join(' | ') || 'none'}`,
+  ].join('\n')
 }

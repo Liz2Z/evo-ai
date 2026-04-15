@@ -53,22 +53,16 @@ export function useMasterState(emitter: EventEmitter | null): MasterStateData & 
       setLastHeartbeat(loadedState.lastHeartbeat || '')
       setActiveSlaves(loadedSlaves.filter((s) => s.status === 'busy').length)
       setPendingCount(loadedTasks.filter((t) => t.status === 'pending').length)
-    } catch {
-      // State files may not exist yet
-    }
+    } catch {}
   }, [])
 
   useEffect(() => {
-    // Initial poll
     pollState()
-
     const projectionEmitter = getProjectionEmitter()
     const onProjectionUpdated = () => {
       pollState()
     }
     projectionEmitter.on('projection:updated', onProjectionUpdated)
-
-    // Poll every 3 seconds as reconciliation
     const pollInterval = setInterval(pollState, 3000)
 
     return () => {
@@ -87,11 +81,7 @@ export function useMasterState(emitter: EventEmitter | null): MasterStateData & 
       setPendingCount(event.pendingCount)
     }
 
-    const onTaskChange = (event: TaskStatusChangeEvent) => {
-      setTasks((prev) =>
-        prev.map((t) => (t.id === event.taskId ? { ...t, status: event.toStatus } : t)),
-      )
-      // Also refresh from disk on significant changes
+    const onTaskChange = (_event: TaskStatusChangeEvent) => {
       pollState()
     }
 
@@ -111,6 +101,10 @@ export function useMasterState(emitter: EventEmitter | null): MasterStateData & 
         runtimeSessionSummary: event.runtimeSessionSummary,
         skippedWakeups: event.skippedWakeups,
         lastSkippedTriggerReason: event.lastSkippedTriggerReason,
+        missionBranch: event.missionBranch,
+        missionWorktree: event.missionWorktree,
+        currentTaskId: event.currentTaskId,
+        currentStage: event.currentStage,
       })
     }
 

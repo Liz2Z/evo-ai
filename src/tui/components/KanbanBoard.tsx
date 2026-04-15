@@ -198,6 +198,7 @@ export function KanbanBoard({ emitter, master, maxConcurrency, onQuit }: KanbanB
             liveLogs={liveLogEntries}
             showLogs={showLogs}
             maxHeight={adjustedMainHeight - 2}
+            masterState={masterState}
           />
         </Box>
       </Box>

@@ -12,13 +12,10 @@ interface TaskListProps {
 
 const STATUS_CONFIG: Record<string, { icon: string; color: string; label: string }> = {
   running: { icon: '●', color: 'yellow', label: 'RUNNING' },
-  assigned: { icon: '●', color: 'yellow', label: 'RUNNING' },
   pending: { icon: '○', color: 'gray', label: 'PENDING' },
   reviewing: { icon: '◆', color: 'cyan', label: 'REVIEWING' },
-  approved: { icon: '✓', color: 'green', label: 'APPROVED' },
   completed: { icon: '✓', color: 'green', label: 'COMPLETED' },
   failed: { icon: '✗', color: 'red', label: 'FAILED' },
-  rejected: { icon: '✗', color: 'red', label: 'REJECTED' },
 }
 
 export function TaskList({ tasks, selectedTaskId, onSelect, maxHeight }: TaskListProps) {
@@ -26,16 +23,15 @@ export function TaskList({ tasks, selectedTaskId, onSelect, maxHeight }: TaskLis
   const currentIndex = selectedTaskId ? flatIds.indexOf(selectedTaskId) : -1
 
   useInput((_input, key) => {
-    if (key.upArrow) {
+    if (key.upArrow && flatIds.length > 0) {
       const next = currentIndex > 0 ? currentIndex - 1 : 0
       onSelect(flatIds[next])
-    } else if (key.downArrow) {
+    } else if (key.downArrow && flatIds.length > 0) {
       const next = currentIndex < flatIds.length - 1 ? currentIndex + 1 : flatIds.length - 1
       onSelect(flatIds[next])
     }
   })
 
-  // Group tasks
   const grouped = new Map<string, Task[]>()
   for (const task of tasks) {
     const key = getGroupKey(task.status)
@@ -44,31 +40,28 @@ export function TaskList({ tasks, selectedTaskId, onSelect, maxHeight }: TaskLis
     grouped.set(key, group)
   }
 
-  // Build lines and fit within maxHeight
-  const lines: { content: React.ReactNode; isTask: boolean; taskId?: string }[] = []
-
+  const lines: { content: React.ReactNode; taskId?: string }[] = []
   for (const status of GROUP_ORDER) {
     const group = grouped.get(status)
     if (!group || group.length === 0) continue
     const cfg = STATUS_CONFIG[status] || STATUS_CONFIG.pending
 
-    if (lines.length > 0) lines.push({ content: <Text> </Text>, isTask: false })
+    if (lines.length > 0) lines.push({ content: <Text> </Text> })
     lines.push({
       content: (
         <Text bold color={cfg.color}>
           {cfg.label} ({group.length})
         </Text>
       ),
-      isTask: false,
     })
 
     for (const task of group) {
-      const cfg2 = STATUS_CONFIG[task.status] || STATUS_CONFIG.pending
       lines.push({
+        taskId: task.id,
         content: (
           <Text>
             {task.id === selectedTaskId ? '> ' : '  '}
-            <Text color={cfg2.color}>{cfg2.icon}</Text>{' '}
+            <Text color={cfg.color}>{cfg.icon}</Text>{' '}
             <Text color={task.id === selectedTaskId ? 'white' : 'gray'}>{task.id.slice(-7)}</Text>{' '}
             <Text color={task.id === selectedTaskId ? 'white' : 'gray'}>
               {task.description.slice(0, 30)}
@@ -76,13 +69,10 @@ export function TaskList({ tasks, selectedTaskId, onSelect, maxHeight }: TaskLis
             </Text>
           </Text>
         ),
-        isTask: true,
-        taskId: task.id,
       })
     }
   }
 
-  // Trim to fit maxHeight, keeping selected item visible
   let visibleLines = lines
   if (lines.length > maxHeight) {
     const selectedIdx = lines.findIndex((l) => l.taskId === selectedTaskId)

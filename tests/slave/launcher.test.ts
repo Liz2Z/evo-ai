@@ -317,13 +317,13 @@ describe('SlaveLauncher - Worktree Title Generation', () => {
 })
 
 describe('SlaveLauncher - Error Handling', () => {
-  test('should handle worktree creation failure gracefully', async () => {
+  test('should execute worker without explicit mission workspace path', async () => {
     const task: Task = {
       id: 'test-task-worktree-fail',
       type: 'fix',
       status: 'pending',
       priority: 5,
-      description: 'Test worktree failure',
+      description: 'Test mission workspace fallback',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       attemptCount: 0,
@@ -334,17 +334,15 @@ describe('SlaveLauncher - Error Handling', () => {
     const launcher = new SlaveLauncher({
       type: 'worker',
       task,
-      mission: 'Test worktree failure',
+      mission: 'Test mission workspace fallback',
       recentDecisions: [],
-      baseBranch: 'invalid-branch', // This will cause worktree creation to fail
     })
 
     await launcher.start()
     const result = (await launcher.execute()) as TaskResult
 
     expect(result).toBeDefined()
-    expect(result.status).toBe('failed')
-    expect(result.error).toContain('Failed to create worktree')
+    expect(result.status).toBe('completed')
   })
 
   test('should handle malformed JSON output from model', async () => {

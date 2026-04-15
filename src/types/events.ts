@@ -1,5 +1,6 @@
 import type {
   MasterRuntimeMode,
+  MasterStage,
   MasterState,
   Question,
   SlaveStatus,
@@ -49,9 +50,10 @@ export interface LogMessageEvent {
 }
 
 export interface WorktreeChangeEvent {
-  taskId: string
+  mission: string
   action: 'created' | 'removed'
   path: string
+  branch?: string
 }
 
 export interface MasterStateEvent {
@@ -67,6 +69,10 @@ export interface MasterStateEvent {
   runtimeSessionSummary?: string
   skippedWakeups: number
   lastSkippedTriggerReason?: string
+  missionBranch?: string
+  missionWorktree?: string
+  currentTaskId?: string
+  currentStage: MasterStage
 }
 
 export interface ProjectionUpdatedEvent {

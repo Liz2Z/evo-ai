@@ -1,6 +1,6 @@
 import { Box, Text } from 'ink'
 import type React from 'react'
-import type { LogEntry, SlaveInfo, Task } from '../../types'
+import type { LogEntry, MasterState, SlaveInfo, Task } from '../../types'
 import { isActiveTask } from './detailPanelModel'
 
 interface DetailPanelProps {
@@ -10,17 +10,15 @@ interface DetailPanelProps {
   liveLogs: LogEntry[]
   showLogs: boolean
   maxHeight: number
+  masterState?: MasterState | null
 }
 
 const STATUS_COLORS: Record<string, string> = {
   pending: 'gray',
-  assigned: 'yellow',
   running: 'yellow',
   reviewing: 'cyan',
-  approved: 'green',
   completed: 'green',
   failed: 'red',
-  rejected: 'red',
 }
 
 function formatTime(iso: string): string {
@@ -46,7 +44,11 @@ function prioritizeLiveLogs(logs: LogEntry[]): LogEntry[] {
   return [...primary, ...secondary]
 }
 
-function buildSummaryLines(task: Task, activeSlaves: SlaveInfo[]): React.ReactNode[] {
+function buildSummaryLines(
+  task: Task,
+  activeSlaves: SlaveInfo[],
+  masterState?: MasterState | null,
+): React.ReactNode[] {
   const lines: React.ReactNode[] = []
 
   lines.push(
@@ -66,24 +68,31 @@ function buildSummaryLines(task: Task, activeSlaves: SlaveInfo[]): React.ReactNo
     </Box>,
   )
 
-  if (task.branch) {
+  if (masterState?.currentStage) {
     lines.push(
-      <Text key="branch">
-        Branch: <Text color="cyan">{task.branch}</Text>
+      <Text key="stage">
+        Mission stage: <Text color="cyan">{masterState.currentStage}</Text>
       </Text>,
     )
   }
-  if (task.worktree) {
+  if (masterState?.missionBranch) {
+    lines.push(
+      <Text key="branch">
+        Mission branch: <Text color="cyan">{masterState.missionBranch}</Text>
+      </Text>,
+    )
+  }
+  if (masterState?.missionWorktree) {
     lines.push(
       <Text key="worktree">
-        Worktree: <Text color="gray">{task.worktree}</Text>
+        Mission worktree: <Text color="gray">{masterState.missionWorktree}</Text>
       </Text>,
     )
   }
   if (task.attemptCount > 0) {
     lines.push(
       <Text key="attempts">
-        Attempts: {task.attemptCount}/{task.maxAttempts}
+        Review rounds: {task.attemptCount}/{task.maxAttempts}
       </Text>,
     )
   }
@@ -167,6 +176,7 @@ export function DetailPanel({
   liveLogs,
   showLogs,
   maxHeight,
+  masterState,
 }: DetailPanelProps) {
   if (!task) {
     return (
@@ -176,12 +186,11 @@ export function DetailPanel({
     )
   }
 
-  // Log view mode
   if (showLogs) {
     return renderFullLogView(task, logs, maxHeight)
   }
 
-  const summaryLines = buildSummaryLines(task, activeSlaves)
+  const summaryLines = buildSummaryLines(task, activeSlaves, masterState)
   const showLiveLogs = isActiveTask(task)
 
   if (!showLiveLogs) {
@@ -194,11 +203,9 @@ export function DetailPanel({
 
     return (
       <Box flexDirection="column">
-        {visible.map((line) => {
-          const key =
-            React.isValidElement(line) && line.key ? String(line.key) : `static-${Math.random()}`
-          return <Box key={key}>{line}</Box>
-        })}
+        {visible.map((line, index) => (
+          <Box key={index}>{line}</Box>
+        ))}
       </Box>
     )
   }
@@ -217,12 +224,9 @@ export function DetailPanel({
 
   return (
     <Box flexDirection="column">
-      {visibleSummary.map((line) => {
-        // Extract key from ReactElement if available, otherwise use index
-        const key =
-          React.isValidElement(line) && line.key ? String(line.key) : `summary-${Math.random()}`
-        return <Box key={key}>{line}</Box>
-      })}
+      {visibleSummary.map((line, index) => (
+        <Box key={index}>{line}</Box>
+      ))}
       <Box>
         <Text bold color="cyan">
           {liveTitle}

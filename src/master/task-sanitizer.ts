@@ -1,12 +1,6 @@
 import type { Task } from '../types'
 
-const ACTIVE_TASK_STATUSES = new Set<Task['status']>([
-  'pending',
-  'assigned',
-  'running',
-  'reviewing',
-  'approved',
-])
+const ACTIVE_TASK_STATUSES = new Set<Task['status']>(['pending', 'running', 'reviewing'])
 
 const LOW_VALUE_DESCRIPTION_PATTERNS: RegExp[] = [
   /auto[-\s]?generated/i,

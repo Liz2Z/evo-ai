@@ -1,5 +1,4 @@
 import { Box, Text } from 'ink'
-import React from 'react'
 
 interface StatusBarProps {
   phase: string
@@ -20,9 +19,7 @@ function timeAgo(iso: string): string {
 const PHASE_COLORS: Record<string, string> = {
   initializing: 'gray',
   inspecting: 'magenta',
-  dispatching: 'yellow',
   reviewing: 'cyan',
-  merging: 'green',
   idle: 'gray',
 }
 

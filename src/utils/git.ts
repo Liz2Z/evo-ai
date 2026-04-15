@@ -1,5 +1,4 @@
 import { join } from 'node:path'
-import type { Task } from '../types'
 
 const FALLBACK_GIT_PATHS = ['/opt/homebrew/bin/git', '/usr/local/bin/git', '/usr/bin/git']
 let cachedGitBinary: string | null = null
@@ -21,9 +20,7 @@ function execGitWithBinary(gitBinary: string, args: string[], cwd?: string): Git
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    if (message.includes('ENOENT')) {
-      return null
-    }
+    if (message.includes('ENOENT')) return null
     return {
       stdout: '',
       stderr: '',
@@ -53,9 +50,7 @@ export async function runGit(
     const result = execGitWithBinary(gitBinary, args, cwd)
     if (result === null) continue
     cachedGitBinary = gitBinary
-    if (result.spawnError) {
-      lastSpawnError = result.spawnError
-    }
+    if (result.spawnError) lastSpawnError = result.spawnError
     return { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode }
   }
 
@@ -83,18 +78,26 @@ export async function branchExists(branch: string, cwd?: string): Promise<boolea
   return result.exitCode === 0
 }
 
-function sanitizeSlug(input: string, maxLen = 40): string {
+function sanitizeSlug(input: string, maxLen = 48): string {
   return (
     input
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '')
-      .slice(0, maxLen) || 'task'
+      .slice(0, maxLen) || 'mission'
   )
 }
 
-async function findExistingTaskWorktree(taskId: string): Promise<string | null> {
-  const branchName = `task/${taskId}`
+function shortStableHash(input: string): string {
+  let hash = 2166136261
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(36).slice(0, 6)
+}
+
+async function findWorktreeByBranch(branchName: string): Promise<string | null> {
   const result = await runGit(['worktree', 'list', '--porcelain'])
   if (result.exitCode !== 0) return null
 
@@ -117,100 +120,38 @@ async function findExistingTaskWorktree(taskId: string): Promise<string | null> 
   return null
 }
 
-function shortStableHash(input: string): string {
-  let hash = 2166136261
-  for (let i = 0; i < input.length; i++) {
-    hash ^= input.charCodeAt(i)
-    hash = Math.imul(hash, 16777619)
-  }
-  return (hash >>> 0).toString(36).slice(0, 6)
+async function getUntrackedFiles(cwd?: string): Promise<string[]> {
+  const result = await runGit(['ls-files', '--others', '--exclude-standard'], cwd)
+  return result.stdout.split('\n').filter(Boolean)
 }
 
-export async function createWorktree(
-  task: Task,
+export async function ensureMissionWorkspace(
+  mission: string,
   baseBranch: string,
-  semanticTitle?: string,
-  worktreesDir: string = '.worktrees',
+  worktreesDir = '.worktrees',
 ): Promise<{ path: string; branch: string } | null> {
-  const branchName = `task/${task.id}`
-  const existing = await findExistingTaskWorktree(task.id)
+  const slug = sanitizeSlug(mission, 36)
+  const branchName = `mission/${slug}-${shortStableHash(mission)}`
+  const existing = await findWorktreeByBranch(branchName)
   if (existing) {
     return { path: existing, branch: branchName }
   }
 
-  const titleSlug = sanitizeSlug(semanticTitle || task.description || task.id)
-  const timestamp = Date.now().toString(36)
-  const hash = shortStableHash(task.id)
-  // Naming rule: semantic first, followed by timestamp and hash
-  const worktreeName = `${titleSlug}-${timestamp}-${hash}`
+  const worktreeName = `${slug}-${shortStableHash(branchName)}`
   const worktreePath = join(process.cwd(), worktreesDir, worktreeName)
-
-  // Create worktree with new branch
-  const result = await runGit(['worktree', 'add', '-b', branchName, worktreePath, baseBranch])
-
-  if (result.exitCode !== 0) {
-    // Try without creating new branch if branch might exist
-    const retryResult = await runGit(['worktree', 'add', worktreePath, branchName])
-    if (retryResult.exitCode !== 0) {
-      return null
-    }
+  const createResult = await runGit(['worktree', 'add', '-b', branchName, worktreePath, baseBranch])
+  if (createResult.exitCode === 0) {
+    return { path: worktreePath, branch: branchName }
   }
 
+  const retryResult = await runGit(['worktree', 'add', worktreePath, branchName])
+  if (retryResult.exitCode !== 0) return null
   return { path: worktreePath, branch: branchName }
 }
 
 export async function removeWorktree(worktreePath: string): Promise<boolean> {
   const result = await runGit(['worktree', 'remove', '--force', worktreePath])
   return result.exitCode === 0
-}
-
-export async function getDiff(branch: string, baseBranch: string, cwd?: string): Promise<string> {
-  const result = await runGit(['diff', `${baseBranch}...${branch}`], cwd)
-  return result.stdout
-}
-
-export async function getChangedFiles(
-  branch: string,
-  baseBranch: string,
-  cwd?: string,
-): Promise<string[]> {
-  const result = await runGit(['diff', '--name-only', `${baseBranch}...${branch}`], cwd)
-  if (!result.stdout) return []
-  return result.stdout.split('\n').filter((f) => f.trim())
-}
-
-export async function commitChanges(message: string, cwd?: string): Promise<boolean> {
-  // Stage all changes
-  await runGit(['add', '-A'], cwd)
-  // Commit
-  const result = await runGit(['commit', '-m', message], cwd)
-  return result.exitCode === 0
-}
-
-export async function mergeBranch(
-  branch: string,
-  baseBranch: string,
-): Promise<{ success: boolean; message: string }> {
-  // Switch to base branch
-  const checkoutResult = await runGit(['checkout', baseBranch])
-  if (checkoutResult.exitCode !== 0) {
-    return { success: false, message: checkoutResult.stderr }
-  }
-
-  // Merge
-  const mergeResult = await runGit([
-    'merge',
-    '--no-ff',
-    '--autostash',
-    branch,
-    '-m',
-    `Merge ${branch}`,
-  ])
-  if (mergeResult.exitCode !== 0) {
-    return { success: false, message: mergeResult.stderr }
-  }
-
-  return { success: true, message: `Merged ${branch} into ${baseBranch}` }
 }
 
 export async function deleteBranch(branch: string): Promise<boolean> {
@@ -223,21 +164,48 @@ export async function hasUncommittedChanges(cwd?: string): Promise<boolean> {
   return result.stdout.length > 0
 }
 
-export async function getRepoStatus(): Promise<{
-  branch: string
-  hasChanges: boolean
-  worktrees: string[]
-}> {
-  const branch = await getCurrentBranch()
-  const hasChanges = await hasUncommittedChanges()
+export async function getUncommittedDiff(cwd?: string): Promise<string> {
+  const parts: string[] = []
+  const staged = await runGit(['diff', '--cached', '--no-ext-diff'], cwd)
+  if (staged.stdout) parts.push(staged.stdout)
 
-  const worktreeResult = await runGit(['worktree', 'list'])
-  const worktrees = worktreeResult.stdout
-    .split('\n')
-    .filter((line) => line.includes('.worktrees'))
-    .map((line) => line.split(/\s+/)[0])
+  const unstaged = await runGit(['diff', '--no-ext-diff'], cwd)
+  if (unstaged.stdout) parts.push(unstaged.stdout)
 
-  return { branch, hasChanges, worktrees }
+  const untracked = await getUntrackedFiles(cwd)
+  for (const file of untracked) {
+    const result = await runGit(['diff', '--no-index', '--', '/dev/null', file], cwd)
+    if (result.stdout) parts.push(result.stdout)
+  }
+
+  return parts.filter(Boolean).join('\n')
+}
+
+export async function getUncommittedChangedFiles(cwd?: string): Promise<string[]> {
+  const cached = await runGit(['diff', '--cached', '--name-only'], cwd)
+  const unstaged = await runGit(['diff', '--name-only'], cwd)
+  const untracked = await getUntrackedFiles(cwd)
+  return [
+    ...new Set(
+      [...cached.stdout.split('\n'), ...unstaged.stdout.split('\n'), ...untracked].filter(Boolean),
+    ),
+  ]
+}
+
+export async function commitAllChanges(
+  message: string,
+  cwd?: string,
+): Promise<{ success: boolean; message: string }> {
+  await runGit(['add', '-A'], cwd)
+  const status = await hasUncommittedChanges(cwd)
+  if (!status) {
+    return { success: false, message: 'No changes to commit' }
+  }
+  const result = await runGit(['commit', '-m', message], cwd)
+  if (result.exitCode !== 0) {
+    return { success: false, message: result.stderr || result.stdout || 'Commit failed' }
+  }
+  return { success: true, message: result.stdout || 'Commit created' }
 }
 
 export async function listWorktrees(): Promise<string[]> {
@@ -247,4 +215,15 @@ export async function listWorktrees(): Promise<string[]> {
     .split('\n')
     .filter((line) => line.startsWith('worktree '))
     .map((line) => line.replace('worktree ', ''))
+}
+
+export async function getRepoStatus(): Promise<{
+  branch: string
+  hasChanges: boolean
+  worktrees: string[]
+}> {
+  const branch = await getCurrentBranch()
+  const hasChanges = await hasUncommittedChanges()
+  const worktrees = await listWorktrees()
+  return { branch, hasChanges, worktrees }
 }

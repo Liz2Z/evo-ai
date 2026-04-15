@@ -1,9 +1,7 @@
 #!/usr/bin/env bun
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-
 import { parseArgs } from 'node:util'
 import { settings } from './config'
-
 import { Master } from './master/scheduler'
 import { getControlFilePath, getHealthFilePath, getRuntimeDataDir } from './runtime/paths'
 import { startTUI } from './tui/index'
@@ -22,7 +20,13 @@ function resolveStartupMission(savedMission?: string, cliMission?: string): stri
   return mission
 }
 
-// Helper to get string value from parsed args
+function shouldLockMission(
+  savedState: Awaited<ReturnType<typeof loadMasterState>>,
+  taskCount: number,
+): boolean {
+  return Boolean(savedState.missionWorktree || savedState.currentTaskId || taskCount > 0)
+}
+
 function getString(value: string | boolean | undefined): string | undefined {
   return typeof value === 'string' ? value : undefined
 }
@@ -31,55 +35,19 @@ async function main() {
   const { values, positionals } = parseArgs({
     args: Bun.argv.slice(2),
     options: {
-      mission: {
-        type: 'string',
-        short: 'm',
-      },
-      interval: {
-        type: 'string',
-        short: 'i',
-      },
-      concurrency: {
-        type: 'string',
-        short: 'c',
-      },
-      config: {
-        type: 'string',
-      },
-      pause: {
-        type: 'boolean',
-        short: 'p',
-      },
-      resume: {
-        type: 'boolean',
-        short: 'r',
-      },
-      cancel: {
-        type: 'string',
-      },
-      add: {
-        type: 'string',
-        short: 'a',
-      },
-      answer: {
-        type: 'string',
-      },
-      status: {
-        type: 'boolean',
-        short: 's',
-      },
-      tasks: {
-        type: 'boolean',
-        short: 't',
-      },
-      failed: {
-        type: 'boolean',
-        short: 'f',
-      },
-      help: {
-        type: 'boolean',
-        short: 'h',
-      },
+      mission: { type: 'string', short: 'm' },
+      interval: { type: 'string', short: 'i' },
+      concurrency: { type: 'string', short: 'c' },
+      config: { type: 'string' },
+      pause: { type: 'boolean', short: 'p' },
+      resume: { type: 'boolean', short: 'r' },
+      cancel: { type: 'string' },
+      add: { type: 'string', short: 'a' },
+      answer: { type: 'string' },
+      status: { type: 'boolean', short: 's' },
+      tasks: { type: 'boolean', short: 't' },
+      failed: { type: 'boolean', short: 'f' },
+      help: { type: 'boolean', short: 'h' },
     },
     strict: false,
   })
@@ -88,26 +56,19 @@ async function main() {
     printHelp()
     process.exit(0)
   }
-
-  // Status check mode
   if (values.status) {
     await printStatus()
     process.exit(0)
   }
-
-  // List tasks mode
   if (values.tasks) {
     await printTasks()
     process.exit(0)
   }
-
-  // List failed tasks mode
   if (values.failed) {
     await printFailedTasks()
     process.exit(0)
   }
 
-  // Answer question mode
   const answerQuestionId = getString(values.answer)
   if (answerQuestionId && positionals[0]) {
     await answerQuestion(answerQuestionId, positionals[0])
@@ -115,7 +76,6 @@ async function main() {
     process.exit(0)
   }
 
-  // Check if we're in a git repo
   if (!(await isGitRepo())) {
     logger.userError('Error: Not in a git repository. Please run from a git repo.')
     process.exit(1)
@@ -123,8 +83,8 @@ async function main() {
 
   const config = settings.get()
   const savedState = await loadMasterState()
+  const existingTasks = await loadTasks()
 
-  // Apply command line overrides
   const cliMission = getString(values.mission)
   const interval = getString(values.interval)
   const concurrency = getString(values.concurrency)
@@ -137,14 +97,16 @@ async function main() {
     }
     config.heartbeatInterval = parsed * 1000
   }
+
   if (concurrency) {
     const parsed = parseInt(concurrency, 10)
     if (Number.isNaN(parsed) || parsed < 1 || parsed > 20) {
       logger.userError('Error: --concurrency must be between 1 and 20.')
       process.exit(1)
     }
-    config.maxConcurrency = parsed
+    logger.info('Single mission mode is active. --concurrency is ignored and fixed to 1.')
   }
+  config.maxConcurrency = 1
 
   if (!(await branchExists(config.developBranch))) {
     logger.userError(`Error: Configured develop branch does not exist: ${config.developBranch}`)
@@ -154,15 +116,21 @@ async function main() {
   let resolvedMission: string
   try {
     resolvedMission = resolveStartupMission(savedState.mission, cliMission)
+    if (
+      savedState.mission &&
+      cliMission?.trim() &&
+      savedState.mission !== cliMission.trim() &&
+      shouldLockMission(savedState, existingTasks.length)
+    ) {
+      throw new Error(`Single mission mode is active. Existing mission: ${savedState.mission}`)
+    }
   } catch (error) {
     logger.userError((error as Error).message)
     process.exit(1)
   }
 
-  // Create and start master
   const master = new Master(config, resolvedMission)
 
-  // Handle signals
   process.on('SIGINT', async () => {
     logger.info('\nShutting down...')
     await master.stop()
@@ -174,7 +142,6 @@ async function main() {
     process.exit(0)
   })
 
-  // Handle commands that require running master
   if (values.pause) {
     if (!(await isMasterHealthy())) {
       logger.error('Error: Master is not running.')
@@ -209,27 +176,23 @@ async function main() {
     process.exit(0)
   }
 
-  // Start master
   await master.start()
 
-  // Start TUI dashboard
   const tuiInstance = startTUI({
     emitter: master,
     master,
-    maxConcurrency: config.maxConcurrency,
+    maxConcurrency: 1,
     onQuit: async () => {
       await master.stop()
     },
   })
 
-  // Handle signals with TUI cleanup
   const cleanup = async () => {
     await master.stop()
     tuiInstance.unmount()
     process.exit(0)
   }
 
-  // Remove earlier signal handlers and replace with unified cleanup
   process.removeAllListeners('SIGINT')
   process.removeAllListeners('SIGTERM')
   process.on('SIGINT', cleanup)
@@ -246,7 +209,7 @@ Usage:
 Options:
   -m, --mission <text>      Set the master's mission
   -i, --interval <seconds>  Set heartbeat interval (default: 30)
-  -c, --concurrency <n>     Set max concurrent slaves (default: 3)
+  -c, --concurrency <n>     Ignored in single mission mode (fixed to 1)
 
 Commands:
   -s, --status              Show master status
@@ -275,6 +238,10 @@ async function printStatus() {
   logger.userOutput(`Running: ${healthy ? `Yes (PID: ${healthy ? getMasterPid() : 'N/A'})` : 'No'}`)
   logger.userOutput(`Mission: ${state.mission || 'Not set. Start with --mission <text>.'}`)
   logger.userOutput(`Current Phase: ${state.currentPhase}`)
+  logger.userOutput(`Current Stage: ${state.currentStage}`)
+  logger.userOutput(`Mission Branch: ${state.missionBranch || 'Unset'}`)
+  logger.userOutput(`Mission Worktree: ${state.missionWorktree || 'Unset'}`)
+  logger.userOutput(`Current Task: ${state.currentTaskId || 'None'}`)
   logger.userOutput(`Active Since: ${state.activeSince}`)
   logger.userOutput(`Last Heartbeat: ${state.lastHeartbeat || 'Never'}`)
   logger.userOutput(`Last Inspection: ${state.lastInspection || 'Never'}`)
@@ -358,28 +325,16 @@ function sendControlCommand(action: 'pause' | 'resume' | 'stop'): void {
 }
 
 async function isMasterHealthy(): Promise<boolean> {
-  const healthFile = getHealthFilePath()
-  if (!existsSync(healthFile)) return false
   try {
-    const health = JSON.parse(readFileSync(healthFile, 'utf-8'))
-    const pid = Number(health.pid)
-    if (!Number.isFinite(pid) || pid <= 0) return false
-
-    // Verify process still exists
-    try {
-      process.kill(pid, 0)
-    } catch {
-      return false
-    }
-
+    const health = JSON.parse(readFileSync(getHealthFilePath(), 'utf-8'))
     const age = Date.now() - new Date(health.timestamp).getTime()
-    const heartbeatInterval =
-      Number(health.heartbeatInterval) || settings.heartbeatInterval.get() || 30000
-    // Consider unhealthy if heartbeat is older than 2x configured interval (+5s grace)
-    return age < heartbeatInterval * 2 + 5000
+    return age < 120000
   } catch {
     return false
   }
 }
 
-main().catch((error) => logger.error(String(error)))
+main().catch((error) => {
+  logger.userError(String(error))
+  process.exit(1)
+})

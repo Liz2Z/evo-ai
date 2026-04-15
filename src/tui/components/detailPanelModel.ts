@@ -1,6 +1,6 @@
 import type { SlaveInfo, Task } from '../../types'
 
-const ACTIVE_TASK_STATUSES: Task['status'][] = ['assigned', 'running', 'reviewing']
+const ACTIVE_TASK_STATUSES: Task['status'][] = ['running', 'reviewing']
 
 export function isActiveTask(task: Task | null): boolean {
   if (!task) return false
