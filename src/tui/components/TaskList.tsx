@@ -10,6 +10,8 @@ interface TaskListProps {
   maxHeight: number
 }
 
+const TASK_PANEL_WIDTH = 31
+
 const STATUS_CONFIG: Record<string, { icon: string; color: string; label: string }> = {
   running: { icon: '●', color: 'yellow', label: 'RUNNING' },
   pending: { icon: '○', color: 'gray', label: 'PENDING' },
@@ -49,9 +51,11 @@ export function TaskList({ tasks, selectedTaskId, onSelect, maxHeight }: TaskLis
     if (lines.length > 0) lines.push({ content: <Text> </Text> })
     lines.push({
       content: (
-        <Text bold color={cfg.color}>
-          {cfg.label} ({group.length})
-        </Text>
+        <Box width={TASK_PANEL_WIDTH}>
+          <Text bold color={cfg.color} wrap="truncate-end">
+            {cfg.label} ({group.length})
+          </Text>
+        </Box>
       ),
     })
 
@@ -59,15 +63,14 @@ export function TaskList({ tasks, selectedTaskId, onSelect, maxHeight }: TaskLis
       lines.push({
         taskId: task.id,
         content: (
-          <Text>
-            {task.id === selectedTaskId ? '> ' : '  '}
-            <Text color={cfg.color}>{cfg.icon}</Text>{' '}
-            <Text color={task.id === selectedTaskId ? 'white' : 'gray'}>{task.id.slice(-7)}</Text>{' '}
-            <Text color={task.id === selectedTaskId ? 'white' : 'gray'}>
-              {task.description.slice(0, 30)}
-              {task.description.length > 30 ? '...' : ''}
+          <Box width={TASK_PANEL_WIDTH}>
+            <Text>{task.id === selectedTaskId ? '> ' : '  '}</Text>
+            <Text color={cfg.color}>{cfg.icon}</Text>
+            <Text> </Text>
+            <Text color={task.id === selectedTaskId ? 'white' : 'gray'} wrap="truncate-end">
+              {task.description}
             </Text>
-          </Text>
+          </Box>
         ),
       })
     }
@@ -84,7 +87,7 @@ export function TaskList({ tasks, selectedTaskId, onSelect, maxHeight }: TaskLis
   }
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width="100%">
       {visibleLines.map((line, i) => (
         <Box key={i}>{line.content}</Box>
       ))}
