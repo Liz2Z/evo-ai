@@ -103,6 +103,116 @@ function mapPartialTaskToTask(t: Partial<Task>): Task {
   }
 }
 
+function truncateInline(text: string, maxLength = 120): string {
+  const normalized = text.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= maxLength) return normalized
+  return `${normalized.slice(0, Math.max(0, maxLength - 3))}...`
+}
+
+function stringifyToolValue(value: unknown, maxLength = 80): string {
+  if (typeof value === 'string') {
+    return truncateInline(value, maxLength)
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean' || value === null) {
+    return String(value)
+  }
+
+  if (Array.isArray(value)) {
+    const preview = value
+      .slice(0, 3)
+      .map((item) => stringifyToolValue(item, 24))
+      .join(', ')
+    const suffix = value.length > 3 ? `, +${value.length - 3}` : ''
+    return `[${preview}${suffix}]`
+  }
+
+  if (value && typeof value === 'object') {
+    try {
+      return truncateInline(JSON.stringify(value), maxLength)
+    } catch {
+      return '[object]'
+    }
+  }
+
+  return String(value)
+}
+
+function formatToolInvocation(toolName: string, args: unknown): string {
+  const input = args && typeof args === 'object' ? (args as Record<string, unknown>) : {}
+
+  switch (toolName) {
+    case 'bash': {
+      const command = typeof input.command === 'string' ? input.command : ''
+      return `bash(${truncateInline(command || '...', 100)})`
+    }
+    case 'read': {
+      const path = typeof input.path === 'string' ? input.path : '?'
+      const offset = typeof input.offset === 'number' ? `, offset=${input.offset}` : ''
+      const limit = typeof input.limit === 'number' ? `, limit=${input.limit}` : ''
+      return `read(${truncateInline(path, 80)}${offset}${limit})`
+    }
+    case 'edit': {
+      const path = typeof input.path === 'string' ? input.path : '?'
+      const edits = Array.isArray(input.edits) ? input.edits.length : 0
+      return `edit(${truncateInline(path, 80)}${edits > 0 ? `, ${edits} edit${edits > 1 ? 's' : ''}` : ''})`
+    }
+    case 'write': {
+      const path = typeof input.path === 'string' ? input.path : '?'
+      return `write(${truncateInline(path, 80)})`
+    }
+    case 'grep': {
+      const pattern = typeof input.pattern === 'string' ? input.pattern : '?'
+      const path = typeof input.path === 'string' ? `, path=${input.path}` : ''
+      const glob = typeof input.glob === 'string' ? `, glob=${input.glob}` : ''
+      return `grep(${truncateInline(pattern, 60)}${truncateInline(path + glob, 40)})`
+    }
+    case 'find': {
+      const pattern = typeof input.pattern === 'string' ? input.pattern : '?'
+      const path = typeof input.path === 'string' ? `, path=${input.path}` : ''
+      return `find(${truncateInline(pattern, 60)}${truncateInline(path, 40)})`
+    }
+    case 'ls': {
+      const path = typeof input.path === 'string' ? input.path : '.'
+      const limit = typeof input.limit === 'number' ? `, limit=${input.limit}` : ''
+      return `ls(${truncateInline(path, 80)}${limit})`
+    }
+    default: {
+      const entries = Object.entries(input).slice(0, 3)
+      if (entries.length === 0) return toolName
+      const summary = entries
+        .map(([key, value]) => `${key}=${stringifyToolValue(value, 32)}`)
+        .join(', ')
+      return `${toolName}(${truncateInline(summary, 100)})`
+    }
+  }
+}
+
+function summarizeToolResult(result: unknown): string | null {
+  if (!result || typeof result !== 'object') {
+    return typeof result === 'string' ? truncateInline(result, 120) : null
+  }
+
+  const record = result as Record<string, unknown>
+  const textLike =
+    typeof record.output === 'string'
+      ? record.output
+      : typeof record.stderr === 'string'
+        ? record.stderr
+        : typeof record.error === 'string'
+          ? record.error
+          : typeof record.message === 'string'
+            ? record.message
+            : null
+
+  if (textLike) return truncateInline(textLike, 120)
+
+  if (typeof record.exitCode === 'number') return `exitCode=${record.exitCode}`
+  if (typeof record.code === 'number') return `code=${record.code}`
+
+  return truncateInline(stringifyToolValue(record, 120), 120)
+}
+
 export interface SlaveOptions {
   type: SlaveType
   task: Task
@@ -176,6 +286,7 @@ export class SlaveLauncher {
       let output = ''
       let unsubscribe: (() => void) | null = null
       let textBuffer = ''
+      const toolCallLabels = new Map<string, string>()
       const flushTextBuffer = (force = false) => {
         if (!textBuffer) return
         const lines = textBuffer.split('\n')
@@ -193,14 +304,21 @@ export class SlaveLauncher {
         }
 
         if (event.type === 'tool_execution_start') {
-          this.log('info', `Tool start: ${event.toolName}`, 'tool_step')
+          const label = formatToolInvocation(event.toolName, event.args)
+          toolCallLabels.set(event.toolCallId, label)
+          this.log('info', `Tool start: ${label}`, 'tool_step')
           return
         }
 
         if (event.type === 'tool_execution_end') {
+          const label = toolCallLabels.get(event.toolCallId) || event.toolName
+          toolCallLabels.delete(event.toolCallId)
+          const resultSummary = summarizeToolResult(event.result)
           this.log(
             event.isError ? 'error' : 'info',
-            `Tool ${event.isError ? 'failed' : 'done'}: ${event.toolName}`,
+            event.isError && resultSummary
+              ? `Tool failed: ${label} -> ${resultSummary}`
+              : `Tool ${event.isError ? 'failed' : 'done'}: ${label}`,
             'tool_step',
           )
           return
