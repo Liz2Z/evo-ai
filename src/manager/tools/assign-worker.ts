@@ -1,24 +1,25 @@
-import type { Task } from '../../types'
+import type { Task, TaskResult } from '../../types'
 import type { WorkerAssignmentResult } from '../runtime'
+import type { AgentHandle, AgentOptions } from '../../agents/launcher'
 
 type TaskStatus = Task['status']
 
 export interface AssignWorkerDeps {
   getTaskById: (taskId: string) => Promise<Task | null>
-  ensureMissionWorkspaceReady: () => Promise<any>
-  updateTask: (taskId: string, updates: any) => Promise<any>
-  setState: (updates: any) => Promise<void>
+  ensureMissionWorkspaceReady: () => Promise<{ status: 'ready' | 'failed'; path?: string; message: string }>
+  updateTask: (taskId: string, updates: Partial<Task>) => Promise<Task | null>
+  setState: (updates: Partial<{ currentTaskId: string; currentStage: string }>) => Promise<void>
   emitTaskStatusChange: (taskId: string, fromStatus: TaskStatus, toStatus: TaskStatus, task: Task) => void
   emitManagerState: () => void
   incrementActiveAgents: () => void
   getRecentDecisions: () => Promise<string[]>
-  createAgentHandle: (config: any) => any
-  activeAgentHandles: Map<string, any>
+  createAgentHandle: (config: AgentOptions) => AgentHandle
+  activeAgentHandles: Map<string, AgentHandle>
   requestTurn: (reason: string) => Promise<void>
-  handleWorkerResult: (taskId: string, result: any) => Promise<void>
+  handleWorkerResult: (taskId: string, result: TaskResult) => Promise<void>
   failTask: (taskId: string, reason: string) => Promise<void>
   activeAgents: number
-  state: { currentTaskId?: string | undefined; currentStage: string; mission: string }
+  state: { currentTaskId?: string; currentStage: string; mission: string }
 }
 
 export async function assignWorker(
@@ -86,16 +87,18 @@ export async function assignWorker(
   void launcher
     .start()
     .then(() => launcher.execute())
-    .then(async (result: any) => {
+    .then(async (result) => {
       activeAgentHandles.delete(freshTask.id)
-      if (result) {
+      if (result && 'status' in result && 'filesChanged' in result) {
         await handleWorkerResult(freshTask.id, result)
-      } else {
+      } else if (!result) {
         await failTask(freshTask.id, 'Worker returned no result')
+      } else {
+        await failTask(freshTask.id, 'Worker returned unexpected result type')
       }
       await requestTurn(`worker_completed:${freshTask.id}`)
     })
-    .catch(async (error: any) => {
+    .catch(async (error) => {
       activeAgentHandles.delete(freshTask.id)
       await failTask(freshTask.id, error instanceof Error ? error.message : String(error))
       await requestTurn(`worker_failed:${freshTask.id}`)

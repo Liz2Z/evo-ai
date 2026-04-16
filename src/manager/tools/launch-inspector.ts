@@ -1,22 +1,30 @@
 import type { ManagerTools } from '../runtime'
+import type { AgentHandle, AgentOptions } from '../../agents/launcher'
+import type { HistoryEntry, Task } from '../../types'
+import type { SanitizedInspectorTasks } from '../task-sanitizer'
+
+interface SimpleLogger {
+  info(message: string): void
+  error(message: string): void
+}
 
 export interface LaunchInspectorDeps {
   refreshActiveAgents: () => Promise<void>
   activeAgents: number
   currentTaskId: string | undefined
-  loadTasks: () => Promise<import('../../types').Task[]>
-  setState: (updates: Partial<{ currentStage: string }>) => Promise<void>
+  loadTasks: () => Promise<Task[]>
+  setState: (updates: Partial<{ currentStage: string; lastInspection?: string }>) => Promise<void>
   emitManagerState: () => void
   incrementActiveAgents: () => void
   getRecentDecisions: () => Promise<string[]>
-  createAgentHandle: (config: any) => any
-  activeAgentHandles: Map<string, any>
-  addHistoryEntry: (entry: any) => Promise<void>
-  sanitizeInspectorTasks: (rawTasks: any[], existingTasks: any[]) => { accepted: any[]; dropped: any[] }
-  parseInspectorTasksFromResult: (summary: string, mission: string) => any[]
-  addTask: (task: any) => Promise<void>
+  createAgentHandle: (config: AgentOptions) => AgentHandle
+  activeAgentHandles: Map<string, AgentHandle>
+  addHistoryEntry: (entry: Omit<HistoryEntry, 'taskId' | 'agentId'> & { taskId?: string; agentId?: string }) => Promise<void>
+  sanitizeInspectorTasks: (rawTasks: Task[], existingTasks: Task[]) => SanitizedInspectorTasks
+  parseInspectorTasksFromResult: (summary: string, mission: string) => Task[]
+  addTask: (task: Task) => Promise<void>
   requestTurn: (reason: string) => Promise<void>
-  logger: any
+  logger: SimpleLogger
   state: { mission: string; currentStage: string }
 }
 
@@ -74,14 +82,14 @@ export async function launchInspector(
     },
     mission: state.mission,
     recentDecisions,
-    onError: (error: any) => logger.error(`Inspector failed: ${error}`),
+    onError: (error) => logger.error(`Inspector failed: ${error}`),
   })
   activeAgentHandles.set('inspection', launcher)
 
   void launcher
     .start()
     .then(() => launcher.execute())
-    .then(async (newTasks: any) => {
+    .then(async (newTasks) => {
       activeAgentHandles.delete('inspection')
       const existingTasks = await loadTasks()
       const rawTasks =
@@ -110,10 +118,10 @@ export async function launchInspector(
       await setState({
         currentStage: 'idle',
         lastInspection: new Date().toISOString(),
-      } as any)
+      })
       await requestTurn(`inspector_completed:${reason}`)
     })
-    .catch(async (error: any) => {
+    .catch(async (error) => {
       activeAgentHandles.delete('inspection')
       await addHistoryEntry({
         timestamp: new Date().toISOString(),

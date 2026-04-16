@@ -4,7 +4,7 @@ import type { ManagerTools } from '../runtime'
 
 export interface AskHumanDeps {
   state: { pendingQuestions: Question[]; currentPhase: string }
-  setState: (updates: any) => Promise<void>
+  setState: (updates: Partial<{ pendingQuestions: Question[] }>) => Promise<void>
 }
 
 export async function askHuman(
