@@ -53,6 +53,16 @@ export function useMasterState(
   )
   const [masterActivities, setMasterActivities] = useState<MasterActivityItem[]>([])
 
+  // 轻量级刷新：仅更新 tasks 和 agents（不含 managerState）
+  const refreshTasksAndAgents = useCallback(async () => {
+    try {
+      const [loadedTasks, loadedSlaves] = await Promise.all([loadTasks(), loadAgents()])
+      setTasks(loadedTasks)
+      setSlaves(loadedSlaves)
+    } catch {}
+  }, [])
+
+  // 完整状态刷新：包含 managerState（仅用于初始化或兜底）
   const pollState = useCallback(async () => {
     try {
       const [loadedTasks, loadedSlaves, loadedState] = await Promise.all([
@@ -82,19 +92,21 @@ export function useMasterState(
   )
 
   useEffect(() => {
+    // 初始化加载完整状态
     pollState()
+
+    // projection:updated 事件触发轻量级刷新（仅 tasks 和 agents）
+    // manager:state 事件会直接更新完整状态，无需轮询
     const projectionEmitter = getProjectionEmitter()
     const onProjectionUpdated = () => {
-      pollState()
+      refreshTasksAndAgents()
     }
     projectionEmitter.on('projection:updated', onProjectionUpdated)
-    const pollInterval = setInterval(pollState, 3000)
 
     return () => {
-      clearInterval(pollInterval)
       projectionEmitter.off('projection:updated', onProjectionUpdated)
     }
-  }, [pollState])
+  }, [pollState, refreshTasksAndAgents])
 
   useEffect(() => {
     refreshHeartbeat(phase, lastHeartbeat)
@@ -117,7 +129,8 @@ export function useMasterState(
     }
 
     const onTaskChange = (_event: TaskStatusChangeEvent) => {
-      pollState()
+      // 任务状态变更时仅刷新 tasks 和 agents
+      refreshTasksAndAgents()
     }
 
     const onMasterState = (event: ManagerStateEvent) => {
@@ -175,7 +188,7 @@ export function useMasterState(
       emitter.off('log:message', onLogMessage)
       emitter.off('manager:activity', onMasterActivity)
     }
-  }, [emitter, pollState, refreshHeartbeat])
+  }, [emitter, refreshTasksAndAgents, refreshHeartbeat])
 
   return {
     tasks,
