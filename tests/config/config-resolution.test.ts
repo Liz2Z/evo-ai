@@ -85,7 +85,7 @@ describe('配置解析', () => {
     expect(config.developBranch).toBe('develop')
     expect(config.models).toEqual({
       lite: 'global-lite',
-      inspector: 'glm-4.5-air',
+      inspector: 'glm-5.1',
       worker: 'local-worker',
       reviewer: 'glm-4.7',
       manager: 'global-manager',
@@ -172,10 +172,10 @@ describe('配置解析', () => {
 
     expect(config.models).toEqual({
       lite: 'global-lite',
-      inspector: 'glm-4.5-air',
+      inspector: 'glm-5.1',
       worker: 'local-worker',
       reviewer: 'glm-4.7',
-      manager: 'glm-5.1',
+      manager: 'glm-4.7',
     })
     expect(config.provider).toEqual({
       apiKey: 'local-credentials-key',
@@ -245,10 +245,10 @@ describe('配置解析', () => {
     expect(defaults.worktreesDir).toBe('.worktrees')
     expect(defaults.developBranch).toBe('develop')
     expect(defaults.models.lite).toBe('glm-4.5-air')
-    expect(defaults.models.inspector).toBe('glm-4.5-air')
+    expect(defaults.models.inspector).toBe('glm-5.1')
     expect(defaults.models.worker).toBe('glm-4.7')
     expect(defaults.models.reviewer).toBe('glm-4.7')
-    expect(defaults.models.manager).toBe('glm-5.1')
+    expect(defaults.models.manager).toBe('glm-4.7')
     expect(defaults.manager.runtimeMode).toBe('heartbeat_agent')
   })
 

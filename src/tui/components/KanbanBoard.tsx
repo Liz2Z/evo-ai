@@ -3,6 +3,7 @@ import { useCallback, useState } from 'react'
 import type { Manager } from '../../manager/scheduler'
 import { useLogStream } from '../hooks/useLogStream'
 import { useMasterState } from '../hooks/useMasterState'
+import { COMMAND_HELP_TEXT, parseMissionCommand } from './commandParser'
 import { DetailPanel } from './DetailPanel'
 import { getActiveTaskSlaves } from './detailPanelModel'
 import { InputBar, useInputBar } from './InputBar'
@@ -76,11 +77,15 @@ export function KanbanBoard({ emitter, manager, heartbeatIntervalMs, onQuit }: K
             await manager.cancelTask(taskId)
             setLastMessage(`Cancelled task ${taskId}`)
           }
-        } else if (text.startsWith('/mission ')) {
-          const mission = text.slice(9).trim()
-          if (manager) {
-            await manager.setMission(mission)
-            setLastMessage(`Mission updated: ${mission}`)
+        } else if (text === '/mission' || text.startsWith('/mission ')) {
+          const missionCommand = parseMissionCommand(text)
+          if (!missionCommand) {
+            setLastMessage('Usage: /mission [--force] <mission>')
+          } else if (manager) {
+            await manager.setMission(missionCommand.mission, missionCommand.force)
+            setLastMessage(
+              `Mission updated${missionCommand.force ? ' (forced)' : ''}: ${missionCommand.mission}`,
+            )
           }
         } else if (text.startsWith('/task ')) {
           const description = text.slice(6).trim()
@@ -91,9 +96,7 @@ export function KanbanBoard({ emitter, manager, heartbeatIntervalMs, onQuit }: K
             setLastMessage('Usage: /task <description>')
           }
         } else if (text === '/help') {
-          setLastMessage(
-            'Commands: /answer /pause /resume /task /cancel /mission /help | Plain text = message to manager',
-          )
+          setLastMessage(COMMAND_HELP_TEXT)
         } else {
           if (manager) {
             await manager.sendMessageToManager(text)

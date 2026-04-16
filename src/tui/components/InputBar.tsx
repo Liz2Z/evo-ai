@@ -17,7 +17,7 @@ const COMMANDS = [
   { cmd: '/task', desc: 'Create a task manually' },
   { cmd: '/cancel', desc: 'Cancel a task by ID' },
   { cmd: '/answer', desc: 'Answer a pending question' },
-  { cmd: '/mission', desc: 'Update manager mission' },
+  { cmd: '/mission', desc: 'Update mission, supports --force' },
 ]
 
 function getMatchingCommands(input: string): typeof COMMANDS {

@@ -505,4 +505,31 @@ describe('Manager runtime driver', () => {
     expect(toolCalls).toEqual(['complete_mission'])
     expect(result.summary).toContain('Mission merged into main')
   })
+
+  test('运行中的 manager 切换 mission 后会立即触发新 turn', async () => {
+    const reasons: string[] = []
+    const runtimeFactory = () =>
+      ({
+        async init() {},
+        async runTurn(context) {
+          reasons.push(context.triggerReason)
+          return {
+            summary: 'turn',
+            toolCalls: [],
+            unauthorizedToolCalls: [],
+          }
+        },
+        async dispose() {},
+      }) satisfies ManagerRuntime
+
+    const manager = new Manager(baseConfig, 'old mission', { runtimeFactory })
+    try {
+      ;(manager as any).isRunning = true
+      await manager.setMission('new mission', true)
+      expect(reasons).toContain('mission_switched')
+      expect(manager.getState().mission).toBe('new mission')
+    } finally {
+      await manager.stop()
+    }
+  })
 })

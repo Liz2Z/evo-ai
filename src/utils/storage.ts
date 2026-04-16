@@ -213,6 +213,12 @@ export async function loadFailedTasks(): Promise<Task[]> {
   return readJSON('failed_tasks.json', [])
 }
 
+export async function saveFailedTasks(tasks: Task[]): Promise<void> {
+  await appendEvent('failed_tasks.replaced', 'failed_task', { count: tasks.length })
+  await writeJSON('failed_tasks.json', tasks)
+  emitProjectionUpdated('failed_tasks')
+}
+
 export async function addFailedTask(task: Task): Promise<void> {
   const failed = await loadFailedTasks()
   failed.push(task)

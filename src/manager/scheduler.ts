@@ -42,7 +42,9 @@ import {
   loadTasks,
   type MissionHistoryEntry,
   saveAgents,
+  saveFailedTasks,
   saveManagerState,
+  saveTasks,
   updateMissionHistoryEntry,
   updateTask,
 } from '../utils/storage'
@@ -315,6 +317,7 @@ export class Manager extends EventEmitter {
     }
 
     const oldMission = this.state.mission
+    await this.resetMissionRuntimeState()
     this.state.mission = trimmed
     await saveManagerState(this.state)
     this.emitManagerState()
@@ -331,6 +334,25 @@ export class Manager extends EventEmitter {
       type: 'decision',
       summary: `Mission switched to: ${trimmed}${oldMission ? ` (from: ${oldMission})` : ''}`,
     })
+
+    if (this.isRunning) {
+      await this.requestTurn('mission_switched')
+    }
+  }
+
+  private async resetMissionRuntimeState(): Promise<void> {
+    await saveTasks([])
+    await saveFailedTasks([])
+
+    this.state.currentTaskId = undefined
+    this.state.currentStage = 'idle'
+    this.state.lastInspection = ''
+    this.state.pendingQuestions = []
+    this.state.runtimeSessionSummary = undefined
+    this.state.skippedWakeups = 0
+    this.state.lastSkippedTriggerReason = undefined
+    this.state.pendingUserMessages = []
+    this.state.activeSince = new Date().toISOString()
   }
 
   private async cleanupCurrentMission(): Promise<void> {
@@ -349,7 +371,9 @@ export class Manager extends EventEmitter {
     const branchToRemove = this.state.missionBranch
 
     if (worktreeToRemove && branchToRemove) {
-      const associations = await getWorktreeMissionAssociations(worktreeToRemove)
+      const associations = await getWorktreeMissionAssociations(worktreeToRemove, {
+        excludeMission: this.state.mission,
+      })
       if (associations.length > 0) {
         const missions = [...new Set(associations.map((entry) => entry.mission))].join(', ')
         this.logger.info(
@@ -357,7 +381,22 @@ export class Manager extends EventEmitter {
         )
       } else {
         this.logger.info(`Removing mission worktree: ${worktreeToRemove}`)
-        await removeWorktree(worktreeToRemove)
+        let removed = await removeWorktree(worktreeToRemove, { allowAssociated: true })
+        if (!removed && existsSync(worktreeToRemove)) {
+          await runGit(['worktree', 'prune'])
+          removed = await removeWorktree(worktreeToRemove, { allowAssociated: true })
+        }
+        if (!removed && existsSync(worktreeToRemove)) {
+          const managedRoot = resolve(process.cwd(), this.config.worktreesDir)
+          const resolvedWorktreePath = resolve(worktreeToRemove)
+          if (
+            resolvedWorktreePath.startsWith(`${managedRoot}/`) ||
+            resolvedWorktreePath === managedRoot
+          ) {
+            await rm(resolvedWorktreePath, { recursive: true, force: true })
+            await runGit(['worktree', 'prune'])
+          }
+        }
         await deleteBranch(branchToRemove)
       }
 

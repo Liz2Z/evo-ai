@@ -5,7 +5,16 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Config, Task } from '../../src/types'
 import { ensureMissionWorkspace, removeWorktree } from '../../src/utils/git'
-import { addTask, loadManagerState, loadTasks, updateAgent } from '../../src/utils/storage'
+import {
+  addFailedTask,
+  addMissionHistoryEntry,
+  addTask,
+  loadFailedTasks,
+  loadManagerState,
+  loadTasks,
+  saveManagerState,
+  updateAgent,
+} from '../../src/utils/storage'
 
 const originalCwd = process.cwd()
 let repoDir: string
@@ -158,5 +167,77 @@ describe('Manager mission workspace recovery', () => {
       await manager.stop()
       await removeWorktree(workspace.path).catch(() => {})
     }
+  })
+
+  test('force 切换 mission 时应允许清理仅由当前 mission 自关联的 worktree', async () => {
+    const sourceMission = `source-switch-${Date.now()}`
+    const targetMission = `target-switch-${Date.now()}`
+    const workspace = await ensureMissionWorkspace(sourceMission, 'main')
+    if (!workspace) throw new Error('workspace missing')
+
+    const manager = new MasterClass(baseConfig, sourceMission) as any
+    manager.state.missionWorktree = workspace.path
+    manager.state.missionBranch = workspace.branch
+
+    await saveManagerState(manager.state)
+    await addMissionHistoryEntry({
+      mission: sourceMission,
+      startedAt: new Date().toISOString(),
+      worktreeBranch: workspace.branch,
+      worktreePath: workspace.path,
+      taskCount: 0,
+    })
+
+    await manager.setMission(targetMission, true)
+
+    const state = await loadManagerState()
+    expect(state.mission).toBe(targetMission)
+    expect(state.missionWorktree).toBeUndefined()
+    expect(state.missionBranch).toBeUndefined()
+    expect(existsSync(workspace.path)).toBe(false)
+  })
+
+  test('切换 mission 时应清空旧任务和旧运行态摘要', async () => {
+    const sourceMission = `source-reset-${Date.now()}`
+    const targetMission = `target-reset-${Date.now()}`
+
+    const completedTask = createTask({
+      id: `completed-${Date.now()}`,
+      status: 'completed',
+      description: 'old completed task',
+    })
+    const failedTask = createTask({
+      id: `failed-${Date.now()}`,
+      status: 'failed',
+      description: 'old failed task',
+    })
+
+    await addTask(completedTask)
+    await addTask(failedTask)
+    await addFailedTask(failedTask)
+
+    const manager = new MasterClass(baseConfig, sourceMission) as any
+    manager.state.runtimeSessionSummary = 'old summary'
+    manager.state.pendingQuestions = [
+      {
+        id: 'q-old',
+        question: 'old question',
+        options: [],
+        createdAt: new Date().toISOString(),
+      },
+    ]
+    manager.state.lastInspection = new Date().toISOString()
+
+    await manager.setMission(targetMission, true)
+
+    const state = await loadManagerState()
+    const tasks = await loadTasks()
+    const failedTasks = await loadFailedTasks()
+    expect(state.mission).toBe(targetMission)
+    expect(state.runtimeSessionSummary).toBeUndefined()
+    expect(state.pendingQuestions).toEqual([])
+    expect(state.lastInspection).toBe('')
+    expect(tasks).toEqual([])
+    expect(failedTasks).toEqual([])
   })
 })

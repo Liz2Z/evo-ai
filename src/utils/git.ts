@@ -233,6 +233,10 @@ export interface WorktreeMissionAssociation {
   source: 'manager' | 'history' | 'local'
 }
 
+interface GetWorktreeMissionAssociationsOptions {
+  excludeMission?: string
+}
+
 function normalizeWorktreePath(worktreePath: string): string {
   return resolve(worktreePath)
 }
@@ -253,15 +257,20 @@ async function readLocalWorktreeMission(worktreePath: string): Promise<string | 
 
 export async function getWorktreeMissionAssociations(
   worktreePath: string,
+  options?: GetWorktreeMissionAssociationsOptions,
 ): Promise<WorktreeMissionAssociation[]> {
   const normalizedPath = normalizeWorktreePath(worktreePath)
   const associations = new Map<string, WorktreeMissionAssociation>()
+  const excludedMission = options?.excludeMission?.trim()
+
+  const shouldIncludeMission = (mission: string): boolean =>
+    mission.trim().length > 0 && mission.trim() !== excludedMission
 
   const masterState = await loadManagerState()
   if (
     masterState.missionWorktree &&
     normalizeWorktreePath(masterState.missionWorktree) === normalizedPath &&
-    masterState.mission.trim()
+    shouldIncludeMission(masterState.mission)
   ) {
     associations.set(`manager:${masterState.mission}`, {
       mission: masterState.mission,
@@ -273,7 +282,7 @@ export async function getWorktreeMissionAssociations(
   for (const entry of missionHistory) {
     if (!entry.worktreePath || normalizeWorktreePath(entry.worktreePath) !== normalizedPath)
       continue
-    if (!entry.mission.trim()) continue
+    if (!shouldIncludeMission(entry.mission)) continue
     associations.set(`history:${entry.mission}`, {
       mission: entry.mission,
       source: 'history',
@@ -281,7 +290,7 @@ export async function getWorktreeMissionAssociations(
   }
 
   const localMission = await readLocalWorktreeMission(normalizedPath)
-  if (localMission) {
+  if (localMission && shouldIncludeMission(localMission)) {
     associations.set(`local:${localMission}`, {
       mission: localMission,
       source: 'local',

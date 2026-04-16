@@ -2,10 +2,10 @@ import { z } from 'zod'
 
 export const agentModelConfigSchema = z.object({
   lite: z.string().default('glm-4.5-air'),
-  inspector: z.string().default('glm-4.5-air'),
+  inspector: z.string().default('glm-5.1'),
   worker: z.string().default('glm-4.7'),
   reviewer: z.string().default('glm-4.7'),
-  manager: z.string().default('glm-5.1'),
+  manager: z.string().default('glm-4.7'),
 })
 
 export const providerConfigSchema = z.object({
