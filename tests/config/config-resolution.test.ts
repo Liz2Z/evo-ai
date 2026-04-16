@@ -203,7 +203,7 @@ describe('配置解析', () => {
     })
     const accessor = manager.load()
 
-    expect((accessor.provider.get() as any).apiKey).toBe('test-key')
+    expect(accessor.provider.get().apiKey).toBe('test-key')
     expect(accessor.maxConcurrency.get()).toBe(3)
     expect(accessor.models.lite.get()).toBe('glm-4.5-air')
   })
@@ -223,6 +223,7 @@ describe('配置解析', () => {
       lastDecisionAt: '',
       turnStatus: 'idle',
       skippedWakeups: 0,
+      currentStage: 'idle',
     })
 
     const defaultMasterFile = join(repoDir, '.evo-ai', '.data', 'master.json')

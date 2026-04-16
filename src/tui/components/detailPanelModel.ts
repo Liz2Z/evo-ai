@@ -1,6 +1,16 @@
 import type { SlaveInfo, Task } from '../../types'
 
 const ACTIVE_TASK_STATUSES: Task['status'][] = ['running', 'reviewing']
+const MIN_SUMMARY_SECTION_HEIGHT = 6
+const MIN_LIVE_LOG_SECTION_HEIGHT = 6
+const SUMMARY_SECTION_RATIO = 0.45
+
+export interface DetailPanelSections {
+  summarySectionHeight: number
+  summaryBodyHeight: number
+  liveLogSectionHeight: number
+  liveLogBodyHeight: number
+}
 
 export function isActiveTask(task: Task | null): boolean {
   if (!task) return false
@@ -25,6 +35,35 @@ export function getTaskFailureReason(task: Task): string | null {
   }
 
   return null
+}
+
+export function calculateDetailPanelSections(
+  maxHeight: number,
+  summaryLineCount: number,
+): DetailPanelSections {
+  const safeMaxHeight = Math.max(4, maxHeight)
+  const maxSummarySectionHeight = Math.max(2, safeMaxHeight - MIN_LIVE_LOG_SECTION_HEIGHT)
+  const preferredSummarySectionHeight = Math.min(
+    summaryLineCount + 1,
+    Math.max(2, Math.floor(safeMaxHeight * SUMMARY_SECTION_RATIO)),
+  )
+
+  const summarySectionHeight =
+    maxSummarySectionHeight <= MIN_SUMMARY_SECTION_HEIGHT
+      ? maxSummarySectionHeight
+      : Math.min(
+          maxSummarySectionHeight,
+          Math.max(MIN_SUMMARY_SECTION_HEIGHT, preferredSummarySectionHeight),
+        )
+
+  const liveLogSectionHeight = Math.max(2, safeMaxHeight - summarySectionHeight)
+
+  return {
+    summarySectionHeight,
+    summaryBodyHeight: Math.max(1, summarySectionHeight - 1),
+    liveLogSectionHeight,
+    liveLogBodyHeight: Math.max(1, liveLogSectionHeight - 1),
+  }
 }
 
 function extractFailureFromContext(context?: string): string | null {

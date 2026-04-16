@@ -1,9 +1,12 @@
 // Auto-generated
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
 import type { AgentSessionEvent } from '@mariozechner/pi-coding-agent'
+import type { PiSessionLifecycle } from '../../src/agent/pi'
 import { runInspector, runReviewer, runWorker, SlaveLauncher } from '../../src/slave/launcher'
 import type { ReviewResult, Task, TaskResult } from '../../src/types'
 import type { LogMessageEvent } from '../../src/types/events'
+
+type MessageUpdateEvent = Extract<AgentSessionEvent, { type: 'message_update' }>
 
 const sessionLifecycleState = {
   disposeCount: 0,
@@ -22,7 +25,7 @@ mock.module('@mariozechner/pi-coding-agent', () => ({
 }))
 
 mock.module('../../src/agent/pi', () => ({
-  createPiSession: async ({ tools }) => {
+  createPiSession: async ({ tools }: { tools?: string[] }) => {
     const listeners: Array<(event: AgentSessionEvent) => void> = []
 
     return {
@@ -44,10 +47,16 @@ mock.module('../../src/agent/pi', () => ({
             })
             listener({
               type: 'message_update',
+              message: {
+                role: 'assistant',
+                content: [],
+              } as unknown as MessageUpdateEvent['message'],
               assistantMessageEvent: {
                 type: 'text_delta',
+                contentIndex: 0,
                 delta: 'first line\nsecond line\n',
-              },
+                partial: {} as never,
+              } as MessageUpdateEvent['assistantMessageEvent'],
             })
             listener({ type: 'agent_end', messages: [] })
           }
@@ -103,16 +112,21 @@ mock.module('../../src/agent/pi', () => ({
       },
     }
   },
-  disposePiSession: (session) => {
+  disposePiSession: (session?: PiSessionLifecycle | null) => {
     session?.dispose?.()
   },
-  abortPiSession: async (session) => {
+  abortPiSession: async (session?: PiSessionLifecycle | null) => {
     await session?.abort?.()
   },
 }))
 
 mock.module('../../src/utils/git', () => ({
-  createWorktree: async (task, baseBranch, _title, _worktreesDir) => {
+  createWorktree: async (
+    task: { id: string },
+    baseBranch: string,
+    _title?: string,
+    _worktreesDir?: string,
+  ) => {
     if (baseBranch === 'invalid-branch') {
       return null
     }
@@ -121,28 +135,28 @@ mock.module('../../src/utils/git', () => ({
       branch: `task/${task.id.slice(-7)}`,
     }
   },
-  removeWorktree: async (_path) => {
+  removeWorktree: async (_path: string) => {
     // Mock implementation
   },
-  getDiff: async (_branch, _baseBranch, _worktreePath) => {
+  getDiff: async (_branch: string, _baseBranch: string, _worktreePath: string) => {
     return 'mock diff content'
   },
-  getChangedFiles: async (_branch, _baseBranch, _worktreePath) => {
+  getChangedFiles: async (_branch: string, _baseBranch: string, _worktreePath: string) => {
     return ['src/test.ts', 'src/test2.ts']
   },
 }))
 
 mock.module('../../src/utils/storage', () => ({
-  updateSlave: async (_slaveId, _update) => {
+  updateSlave: async (_slaveId: string, _update: Record<string, unknown>) => {
     // Mock implementation
   },
-  addHistoryEntry: async (_entry) => {
+  addHistoryEntry: async (_entry: Record<string, unknown>) => {
     // Mock implementation
   },
 }))
 
 mock.module('node:fs', () => ({
-  readFileSync: (path, _encoding) => {
+  readFileSync: (path: string, _encoding: string) => {
     if (path.includes('inspector.md')) {
       return '# Inspector Prompt\nYou are an inspector.'
     } else if (path.includes('worker.md')) {
@@ -165,7 +179,7 @@ mock.module('../../src/config', () => ({
       worktreesDir: '/tmp/worktrees',
     }),
   },
-  getConfiguredModel: (config, purpose) => {
+  getConfiguredModel: (config: { models: Record<string, string> }, purpose: string) => {
     const tierMap: Record<string, string> = {
       taskTitle: 'lite',
       slave: 'pro',
@@ -382,9 +396,6 @@ describe('SlaveLauncher - Error Handling', () => {
     }
 
     // Mock the session to return malformed JSON
-    const { createPiSession } = await import('@mariozechner/pi-coding-agent')
-    const _originalCreate = createPiSession
-
     // This would need more sophisticated mocking to test properly
     // For now, we verify the launcher can be created
     const launcher = new SlaveLauncher({
@@ -784,13 +795,15 @@ describe('SlaveLauncher - Logging', () => {
     await launcher.start()
     await launcher.execute()
 
-    expect(capturedEvent).toBeDefined()
-    if (capturedEvent) {
-      expect(capturedEvent.slaveId).toBeDefined()
-      expect(capturedEvent.taskId).toBe(task.id)
-      expect(capturedEvent.timestamp).toBeDefined()
-      expect(capturedEvent.source).toBeDefined()
+    if (capturedEvent === null) {
+      throw new Error('expected log event to be captured')
     }
+
+    const event = capturedEvent as LogMessageEvent
+    expect(event.slaveId).toBeDefined()
+    expect(event.taskId).toBe(task.id)
+    expect(event.timestamp).toBeDefined()
+    expect(event.source).toBeDefined()
   })
 
   test('should emit text_delta as agent_text logs and split by lines', async () => {

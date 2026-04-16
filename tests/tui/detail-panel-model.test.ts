@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  calculateDetailPanelSections,
   getActiveTaskSlaves,
   getTaskFailureReason,
   isActiveTask,
@@ -82,5 +83,21 @@ describe('detailPanelModel', () => {
     }
 
     expect(getTaskFailureReason(failedTask)).toBe('missing acceptance path')
+  })
+
+  test('详情面板为实时日志预留独立下半区，避免统计区被挤占', () => {
+    const sections = calculateDetailPanelSections(24, 14)
+
+    expect(sections.summarySectionHeight).toBeLessThan(sections.liveLogSectionHeight)
+    expect(sections.summaryBodyHeight).toBe(sections.summarySectionHeight - 1)
+    expect(sections.liveLogBodyHeight).toBe(sections.liveLogSectionHeight - 1)
+  })
+
+  test('小高度终端下仍保证上下两块都至少保留标题和内容区', () => {
+    const sections = calculateDetailPanelSections(8, 20)
+
+    expect(sections.summarySectionHeight).toBeGreaterThanOrEqual(2)
+    expect(sections.liveLogSectionHeight).toBeGreaterThanOrEqual(2)
+    expect(sections.summarySectionHeight + sections.liveLogSectionHeight).toBe(8)
   })
 })

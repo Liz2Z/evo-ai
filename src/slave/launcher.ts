@@ -17,6 +17,7 @@ import { Logger } from '../utils/logger'
 import { addHistoryEntry, updateSlave } from '../utils/storage'
 
 const PROMPTS_DIR = join(import.meta.dir, 'prompts')
+const CHILD_ENTRY_PATH = join(import.meta.dir, 'child.ts')
 
 class RateLimiter {
   private queue: Array<{ resolve: () => void }> = []
@@ -106,6 +107,16 @@ function mapPartialTaskToTask(t: Partial<Task>): Task {
     maxAttempts: 3,
     reviewHistory: [],
   }
+}
+
+export function parseInspectorTasksSummary(summary: string): Task[] {
+  const parsed = parseFirstJSONObject(summary)
+  if (!parsed || !Array.isArray(parsed.tasks)) return []
+  const tasks = parsed.tasks.filter(
+    (item): item is Partial<Task> =>
+      Boolean(item) && typeof item === 'object' && !Array.isArray(item),
+  )
+  return tasks.map(mapPartialTaskToTask)
 }
 
 function truncateInline(text: string, maxLength = 120): string {
@@ -223,11 +234,261 @@ export interface SlaveOptions {
   task: Task
   mission: string
   recentDecisions: string[]
+  baseBranch?: string
   additionalContext?: string
   worktreePath?: string
   logger?: SlaveLogger
   onLog?: (event: LogMessageEvent) => void
   onError?: (error: unknown) => void
+}
+
+export type SlaveExecutionResult = TaskResult | ReviewResult | null
+
+export interface SlaveHandle {
+  start(): Promise<{ slaveId: string }>
+  execute(): Promise<SlaveExecutionResult>
+  cancel(): Promise<void>
+}
+
+interface Deferred<T> {
+  promise: Promise<T>
+  resolve: (value: T) => void
+  reject: (reason?: unknown) => void
+  settled: boolean
+}
+
+interface ChildStdinSink {
+  write(chunk: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer): number
+  flush(): number | Promise<number>
+  end(error?: Error): number | Promise<number>
+}
+
+interface ChildProcessHandle {
+  stdin: ChildStdinSink
+  stdout: ReadableStream<Uint8Array>
+  stderr: ReadableStream<Uint8Array>
+  exited: Promise<number>
+  kill(): void
+  exitCode: number | null
+}
+
+interface SlaveChildStartedMessage {
+  type: 'started'
+  slaveId: string
+  pid: number
+}
+
+interface SlaveChildLogMessage {
+  type: 'log'
+  event: LogMessageEvent
+}
+
+interface SlaveChildResultMessage {
+  type: 'result'
+  result: SlaveExecutionResult
+}
+
+interface SlaveChildErrorMessage {
+  type: 'error'
+  message: string
+  stack?: string
+}
+
+type SlaveChildMessage =
+  | SlaveChildStartedMessage
+  | SlaveChildLogMessage
+  | SlaveChildResultMessage
+  | SlaveChildErrorMessage
+
+function createDeferred<T>(): Deferred<T> {
+  let resolveFn!: (value: T) => void
+  let rejectFn!: (reason?: unknown) => void
+  const deferred: Deferred<T> = {
+    promise: new Promise<T>((resolve, reject) => {
+      resolveFn = (value) => {
+        if (deferred.settled) return
+        deferred.settled = true
+        resolve(value)
+      }
+      rejectFn = (reason) => {
+        if (deferred.settled) return
+        deferred.settled = true
+        reject(reason)
+      }
+    }),
+    resolve: (value) => resolveFn(value),
+    reject: (reason) => rejectFn(reason),
+    settled: false,
+  }
+  return deferred
+}
+
+function shouldUseIsolatedSlaveProcess(): boolean {
+  return process.env.NODE_ENV !== 'test' && process.env.EVO_AI_DISABLE_ISOLATED_SLAVES !== '1'
+}
+
+async function writeToChildStdin(
+  stdin: ChildStdinSink,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  try {
+    const bytes = new TextEncoder().encode(JSON.stringify(payload))
+    stdin.write(bytes)
+    await stdin.flush()
+  } finally {
+    await stdin.end()
+  }
+}
+
+async function consumeReadableStream(
+  stream: ReadableStream<Uint8Array>,
+  onChunk: (chunk: string) => void,
+): Promise<void> {
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      onChunk(decoder.decode(value, { stream: true }))
+    }
+    const tail = decoder.decode()
+    if (tail) onChunk(tail)
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+export class ProcessSlaveLauncher implements SlaveHandle {
+  private subprocess?: ChildProcessHandle
+  private readonly startDeferred = createDeferred<{ slaveId: string }>()
+  private readonly resultDeferred = createDeferred<SlaveExecutionResult>()
+  private stderrBuffer = ''
+  private stdoutBuffer = ''
+  private slaveId?: string
+  private started = false
+
+  constructor(private readonly options: SlaveOptions) {}
+
+  async start(): Promise<{ slaveId: string }> {
+    if (this.started) {
+      return this.startDeferred.promise
+    }
+
+    this.started = true
+    const subprocess = Bun.spawn([process.execPath, 'run', CHILD_ENTRY_PATH], {
+      cwd: process.cwd(),
+      stdin: 'pipe',
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: {
+        ...process.env,
+        EVO_AI_CHILD_SLAVE: '1',
+      },
+    })
+    this.subprocess = subprocess
+
+    void consumeReadableStream(subprocess.stdout, (chunk) => this.handleStdoutChunk(chunk))
+    void consumeReadableStream(subprocess.stderr, (chunk) => {
+      this.stderrBuffer += chunk
+    })
+
+    void subprocess.exited.then((exitCode: number) => {
+      if (!this.startDeferred.settled) {
+        this.startDeferred.reject(
+          new Error(
+            `Slave child exited before start (code=${exitCode})${this.stderrBuffer ? `: ${this.stderrBuffer.trim()}` : ''}`,
+          ),
+        )
+      }
+      if (!this.resultDeferred.settled) {
+        this.resultDeferred.reject(
+          new Error(
+            `Slave child exited before result (code=${exitCode})${this.stderrBuffer ? `: ${this.stderrBuffer.trim()}` : ''}`,
+          ),
+        )
+      }
+    })
+
+    try {
+      await writeToChildStdin(subprocess.stdin, { options: this.options })
+    } catch (error) {
+      this.startDeferred.reject(error)
+      this.resultDeferred.reject(error)
+    }
+
+    return this.startDeferred.promise
+  }
+
+  async execute(): Promise<SlaveExecutionResult> {
+    if (!this.started) {
+      await this.start()
+    }
+    return this.resultDeferred.promise
+  }
+
+  async cancel(): Promise<void> {
+    if (this.subprocess && this.subprocess.exitCode === null) {
+      this.subprocess.kill()
+      await this.subprocess.exited.catch(() => {})
+    }
+
+    if (this.slaveId) {
+      await updateSlave(this.slaveId, {
+        status: 'idle',
+        currentTask: undefined,
+        pid: undefined,
+      })
+    }
+  }
+
+  private handleStdoutChunk(chunk: string): void {
+    this.stdoutBuffer += chunk
+    const lines = this.stdoutBuffer.split('\n')
+    this.stdoutBuffer = lines.pop() || ''
+
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      this.handleChildMessage(trimmed)
+    }
+  }
+
+  private handleChildMessage(line: string): void {
+    let message: SlaveChildMessage
+    try {
+      message = JSON.parse(line) as SlaveChildMessage
+    } catch {
+      this.stderrBuffer += `${line}\n`
+      return
+    }
+
+    if (message.type === 'started') {
+      this.slaveId = message.slaveId
+      this.startDeferred.resolve({ slaveId: message.slaveId })
+      return
+    }
+
+    if (message.type === 'log') {
+      this.options.onLog?.(message.event)
+      return
+    }
+
+    if (message.type === 'result') {
+      this.resultDeferred.resolve(message.result)
+      return
+    }
+
+    this.startDeferred.reject(new Error(message.message))
+    this.resultDeferred.reject(new Error(message.message))
+  }
+}
+
+export function createSlaveHandle(options: SlaveOptions): SlaveHandle {
+  if (process.env.EVO_AI_CHILD_SLAVE === '1' || !shouldUseIsolatedSlaveProcess()) {
+    return new SlaveLauncher(options)
+  }
+  return new ProcessSlaveLauncher(options)
 }
 
 export class SlaveLauncher {
@@ -506,6 +767,7 @@ export class SlaveLauncher {
     await updateSlave(this.slaveId, {
       status: 'idle',
       currentTask: undefined,
+      pid: undefined,
     })
   }
 
@@ -533,7 +795,7 @@ export async function runInspector(mission: string, recentDecisions: string[]): 
     reviewHistory: [],
   }
 
-  const launcher = new SlaveLauncher({
+  const launcher = createSlaveHandle({
     type: 'inspector',
     task: inspectorTask,
     mission,
@@ -545,15 +807,8 @@ export async function runInspector(mission: string, recentDecisions: string[]): 
   const result = await launcher.execute()
 
   if (result && 'summary' in result) {
-    const raw = result.summary
-    const parsed = parseFirstJSONObject(raw)
-    if (parsed && Array.isArray(parsed.tasks)) {
-      const tasks = parsed.tasks.filter(
-        (item): item is Partial<Task> =>
-          Boolean(item) && typeof item === 'object' && !Array.isArray(item),
-      )
-      return tasks.map(mapPartialTaskToTask)
-    }
+    const tasks = parseInspectorTasksSummary(result.summary)
+    if (tasks.length > 0) return tasks
   }
 
   const trimmedMission = mission.trim()
@@ -585,7 +840,7 @@ export async function runWorker(
   worktreePath: string,
   onLog?: (event: LogMessageEvent) => void,
 ): Promise<TaskResult | null> {
-  const launcher = new SlaveLauncher({
+  const launcher = createSlaveHandle({
     type: 'worker',
     task,
     mission,
@@ -604,10 +859,10 @@ export async function runReviewer(
   mission: string,
   recentDecisions: string[],
   diff: string,
-  worktreePath: string,
+  worktreePath?: string,
   onLog?: (event: LogMessageEvent) => void,
 ): Promise<ReviewResult | null> {
-  const launcher = new SlaveLauncher({
+  const launcher = createSlaveHandle({
     type: 'reviewer',
     task,
     mission,

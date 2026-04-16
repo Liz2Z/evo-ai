@@ -6,6 +6,7 @@ import { decisionEngine } from '../../src/master/decision'
 import {
   buildMasterPrompt,
   buildMasterSystemPrompt,
+  type CompleteMissionResult,
   createMasterRuntime,
   MasterAgentAdapter,
   type MasterRuntime,
@@ -168,6 +169,10 @@ function createNoopTools(): MasterTools {
     cancel_task: async ({ taskId }) => ({ status: 'cancelled', taskId }),
     retry_task: async ({ taskId }) => ({ status: 'retried', taskId }),
     commit_current_task: async () => ({ status: 'noop', taskId: task.id, message: 'ok' }),
+    complete_mission: async (): Promise<CompleteMissionResult> => ({
+      status: 'noop',
+      message: 'ok',
+    }),
     ask_human: async ({ question, options = [] }) => ({
       id: 'q-runtime',
       question,
@@ -383,5 +388,56 @@ describe('Master runtime driver', () => {
     })
 
     expect(decision.action).toBe('continue')
+  })
+
+  test('所有任务都已结束时优先 complete_mission，而不是再次 launch_inspector', async () => {
+    const context = createContext('hybrid')
+    context.tasks = [
+      {
+        ...context.tasks[0],
+        status: 'completed',
+      },
+      {
+        ...context.tasks[0],
+        id: 'task-2',
+        status: 'failed',
+      },
+    ]
+    context.masterState.missionBranch = 'mission/test'
+    context.masterState.missionWorktree = '/tmp/mission'
+
+    const toolCalls: string[] = []
+    const tools = createNoopTools()
+    tools.get_master_snapshot = async () => ({
+      mission: context.mission,
+      runtimeMode: 'hybrid',
+      currentPhase: 'idle',
+      turnStatus: 'idle',
+      activeSlaves: 0,
+      maxConcurrency: 1,
+      pendingCount: 0,
+      pendingQuestions: [],
+      lastHeartbeat: '',
+      lastDecisionAt: '',
+      skippedWakeups: 0,
+      currentStage: 'idle',
+      missionBranch: 'mission/test',
+      missionWorktree: '/tmp/mission',
+    })
+    tools.complete_mission = async () => {
+      toolCalls.push('complete_mission')
+      return { status: 'merged', message: 'ok' }
+    }
+    tools.launch_inspector = async () => {
+      toolCalls.push('launch_inspector')
+      return { status: 'started', createdTaskIds: [], message: 'unexpected' }
+    }
+
+    const runtime = createMasterRuntime('hybrid', context.config, context.masterState)
+    const result = await runtime.runTurn(context, tools)
+
+    expect(result.toolCalls).toContain('complete_mission')
+    expect(toolCalls).toEqual(['complete_mission'])
+    expect(result.summary).toContain('Mission merged into main')
   })
 })

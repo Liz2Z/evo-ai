@@ -1,6 +1,12 @@
 export type TaskStatus = 'pending' | 'running' | 'reviewing' | 'completed' | 'failed'
 export type TaskType = 'fix' | 'feature' | 'refactor' | 'test' | 'docs' | 'other'
-export type MasterStage = 'idle' | 'inspecting' | 'working' | 'reviewing' | 'committing'
+export type MasterStage =
+  | 'idle'
+  | 'inspecting'
+  | 'working'
+  | 'reviewing'
+  | 'committing'
+  | 'integrating'
 
 export interface Task {
   id: string

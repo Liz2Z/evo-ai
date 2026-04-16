@@ -69,6 +69,11 @@ export interface CommitTaskResult {
   message: string
 }
 
+export interface CompleteMissionResult {
+  status: 'merged' | 'noop' | 'failed'
+  message: string
+}
+
 export interface MissionWorkspaceResult {
   status: 'ready' | 'failed'
   path?: string
@@ -107,6 +112,7 @@ export interface MasterTools {
     additionalContext?: string
   }): Promise<{ status: 'retried' | 'noop' | 'not_found'; taskId: string }>
   commit_current_task(): Promise<CommitTaskResult>
+  complete_mission(): Promise<CompleteMissionResult>
   ask_human(input: { question: string; options?: string[] }): Promise<Question>
 }
 
@@ -146,6 +152,7 @@ export class MasterAgentAdapter {
     'cancel_task',
     'retry_task',
     'commit_current_task',
+    'complete_mission',
     'ask_human',
   ])
 
@@ -385,6 +392,31 @@ class HybridMasterRuntime implements MasterRuntime {
       }
     }
 
+    const openTasks = context.tasks.filter((task) =>
+      ['pending', 'running', 'reviewing'].includes(task.status),
+    )
+    const hasTaskHistory = context.tasks.length > 0
+    const shouldCompleteMission =
+      snapshot.activeSlaves === 0 &&
+      !snapshot.currentTaskId &&
+      openTasks.length === 0 &&
+      hasTaskHistory &&
+      Boolean(snapshot.missionBranch) &&
+      Boolean(snapshot.missionWorktree)
+
+    if (shouldCompleteMission) {
+      const completeResult = await tools.complete_mission()
+      toolCalls.push('complete_mission')
+      return {
+        summary:
+          completeResult.status === 'merged'
+            ? `Mission merged into ${context.config.developBranch}`
+            : `Mission completion blocked: ${completeResult.message}`,
+        toolCalls,
+        unauthorizedToolCalls,
+      }
+    }
+
     const pendingTasks = decisionEngine.prioritizeTasks(
       context.tasks.filter((task) => task.status === 'pending').slice(),
     )
@@ -401,6 +433,7 @@ class HybridMasterRuntime implements MasterRuntime {
     const shouldInspect =
       snapshot.activeSlaves === 0 &&
       !snapshot.currentTaskId &&
+      context.tasks.length === 0 &&
       context.tasks.filter((task) => ['pending', 'running', 'reviewing'].includes(task.status))
         .length === 0 &&
       decisionEngine.shouldInspect({
@@ -587,6 +620,11 @@ function buildMasterPiTools(
     Type.Object({}),
   )
   pushTool(
+    'complete_mission',
+    'Merge the mission branch into the integration branch and clean up mission workspace state.',
+    Type.Object({}),
+  )
+  pushTool(
     'ask_human',
     'Ask a human question and persist it for later answer.',
     Type.Object({
@@ -625,6 +663,7 @@ export function buildMasterSystemPrompt(): string {
     '6. Do not commit task changes before reviewer approval.',
     '7. Review approval only unlocks a task-level commit on the mission branch. Do not merge mission work into main/master/develop during task execution.',
     '8. Merge is only a mission-completion action and must never happen as part of an in-flight task cycle.',
+    '9. Once there are no pending/running/reviewing tasks left, complete the mission instead of launching a new inspector pass.',
     'Be concise and tool-driven.',
   ].join('\n')
 }
@@ -665,6 +704,7 @@ export function buildMasterPrompt(context: MasterRuntimeContext, sessionHints: s
     'Execution policy:',
     '- All implementation changes must stay on the mission branch inside the mission worktree.',
     '- Only call commit_current_task after reviewer approval and only for the current reviewed task.',
+    '- If no pending/running/reviewing tasks remain, call complete_mission instead of launching inspector.',
     '- Do not merge to main/master/develop while the mission is still running.',
     '- Any newly created task description must be in Simplified Chinese.',
     'Task summary:',

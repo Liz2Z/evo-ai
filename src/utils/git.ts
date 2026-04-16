@@ -296,6 +296,11 @@ export async function hasUncommittedChanges(cwd?: string): Promise<boolean> {
   return result.stdout.length > 0
 }
 
+async function hasTrackedUncommittedChanges(cwd?: string): Promise<boolean> {
+  const result = await runGit(['status', '--porcelain', '--untracked-files=no'], cwd)
+  return result.stdout.length > 0
+}
+
 export async function getUncommittedDiff(cwd?: string): Promise<string> {
   const parts: string[] = []
   const staged = await runGit(['diff', '--cached', '--no-ext-diff'], cwd)
@@ -338,6 +343,44 @@ export async function commitAllChanges(
     return { success: false, message: result.stderr || result.stdout || 'Commit failed' }
   }
   return { success: true, message: result.stdout || 'Commit created' }
+}
+
+export async function mergeBranchIntoBase(
+  sourceBranch: string,
+  baseBranch: string,
+  cwd?: string,
+): Promise<{ success: boolean; message: string }> {
+  const currentBranch = normalizeBranchName(await getCurrentBranch(cwd))
+  const normalizedBaseBranch = normalizeBranchName(baseBranch)
+
+  if (!currentBranch) {
+    return { success: false, message: 'Unable to determine current branch before mission merge' }
+  }
+
+  if (currentBranch !== normalizedBaseBranch) {
+    return {
+      success: false,
+      message: `Repository is on ${currentBranch}. Expected ${normalizedBaseBranch} before mission merge.`,
+    }
+  }
+
+  if (await hasTrackedUncommittedChanges(cwd)) {
+    return {
+      success: false,
+      message: `Repository has tracked uncommitted changes on ${normalizedBaseBranch}. Mission merge requires a clean integration branch.`,
+    }
+  }
+
+  const result = await runGit(['merge', '--no-ff', '--no-edit', sourceBranch], cwd)
+  if (result.exitCode === 0) {
+    return { success: true, message: result.stdout || 'Mission branch merged successfully' }
+  }
+
+  await runGit(['merge', '--abort'], cwd)
+  return {
+    success: false,
+    message: result.stderr || result.stdout || `Failed to merge ${sourceBranch} into ${baseBranch}`,
+  }
 }
 
 export async function listWorktrees(): Promise<string[]> {

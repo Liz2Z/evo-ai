@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { getGroupedTaskIds } from '../../src/tui/components/taskListModel'
+import { getAdjacentGroupTaskId, getGroupedTaskIds } from '../../src/tui/components/taskListModel'
 import type { Task } from '../../src/types'
 
 function createTask(id: string, status: Task['status']): Task {
@@ -42,5 +42,36 @@ describe('taskListModel', () => {
     ]
 
     expect(getGroupedTaskIds(tasks)).toEqual(['2', '3', '1', '4'])
+  })
+
+  test('向右应跳到下一个非空阶段的首个任务', () => {
+    const tasks: Task[] = [
+      createTask('run-1', 'running'),
+      createTask('run-2', 'running'),
+      createTask('done-1', 'completed'),
+      createTask('fail-1', 'failed'),
+    ]
+
+    expect(getAdjacentGroupTaskId(tasks, 'run-2', 'right')).toBe('done-1')
+    expect(getAdjacentGroupTaskId(tasks, 'done-1', 'right')).toBe('fail-1')
+  })
+
+  test('向左应跳到上一个非空阶段的首个任务', () => {
+    const tasks: Task[] = [
+      createTask('run-1', 'running'),
+      createTask('pending-1', 'pending'),
+      createTask('done-1', 'completed'),
+      createTask('done-2', 'completed'),
+    ]
+
+    expect(getAdjacentGroupTaskId(tasks, 'done-2', 'left')).toBe('pending-1')
+    expect(getAdjacentGroupTaskId(tasks, 'pending-1', 'left')).toBe('run-1')
+  })
+
+  test('边界阶段继续左右切换时保持当前选择不变', () => {
+    const tasks: Task[] = [createTask('run-1', 'running'), createTask('fail-1', 'failed')]
+
+    expect(getAdjacentGroupTaskId(tasks, 'run-1', 'left')).toBe('run-1')
+    expect(getAdjacentGroupTaskId(tasks, 'fail-1', 'right')).toBe('fail-1')
   })
 })

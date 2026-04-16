@@ -1,8 +1,13 @@
 import { Box, Text } from 'ink'
 import type React from 'react'
+import { isValidElement } from 'react'
 import type { LogEntry, MasterState, SlaveInfo, Task } from '../../types'
 import { formatBeijingTime } from '../../utils/time'
-import { getTaskFailureReason, isActiveTask } from './detailPanelModel'
+import {
+  calculateDetailPanelSections,
+  getTaskFailureReason,
+  isActiveTask,
+} from './detailPanelModel'
 
 interface DetailPanelProps {
   task: Task | null
@@ -49,6 +54,14 @@ function prioritizeLiveLogs(logs: LogEntry[]): LogEntry[] {
   const primary = logs.filter((entry) => entry.source !== 'status')
   const secondary = logs.filter((entry) => entry.source === 'status')
   return [...primary, ...secondary]
+}
+
+function getNodeKey(node: React.ReactNode, fallback: string): string {
+  if (isValidElement(node) && node.key != null) {
+    return String(node.key)
+  }
+
+  return fallback
 }
 
 function buildSummaryLines(
@@ -236,17 +249,17 @@ export function DetailPanel({
     return (
       <Box flexDirection="column">
         {visible.map((line, index) => (
-          <Box key={index}>{line}</Box>
+          <Box key={getNodeKey(line, `detail-${index}`)}>{line}</Box>
         ))}
       </Box>
     )
   }
 
-  const summaryHeight = Math.max(6, Math.min(summaryLines.length + 1, Math.floor(maxHeight * 0.45)))
-  const logHeight = Math.max(4, maxHeight - summaryHeight - 1)
-  const visibleSummary = summaryLines.slice(0, summaryHeight - 1)
+  const { summarySectionHeight, summaryBodyHeight, liveLogSectionHeight, liveLogBodyHeight } =
+    calculateDetailPanelSections(maxHeight, summaryLines.length)
+  const visibleSummary = summaryLines.slice(0, summaryBodyHeight)
   const showSlaveId = activeSlaves.length !== 1
-  const visibleLiveLogs = prioritizeLiveLogs(liveLogs).slice(-(logHeight - 1))
+  const visibleLiveLogs = prioritizeLiveLogs(liveLogs).slice(-liveLogBodyHeight)
   const liveTitle =
     activeSlaves.length === 0
       ? 'LIVE LOGS: waiting for active slave [live]'
@@ -255,29 +268,35 @@ export function DetailPanel({
         : `LIVE LOGS: ${activeSlaves.length} slaves [live]`
 
   return (
-    <Box flexDirection="column">
-      {visibleSummary.map((line, index) => (
-        <Box key={index}>{line}</Box>
-      ))}
-      <Box>
-        <Text bold color="cyan">
-          {liveTitle}
-        </Text>
-        <Text color="gray"> ({liveLogs.length} lines)</Text>
+    <Box flexDirection="column" height={maxHeight}>
+      <Box flexDirection="column" height={summarySectionHeight} flexShrink={0}>
+        <Box>
+          <Text bold color="cyan">
+            STATS
+          </Text>
+        </Box>
+        {visibleSummary.map((line, index) => (
+          <Box key={getNodeKey(line, `summary-${index}`)}>{line}</Box>
+        ))}
       </Box>
-      {activeSlaves.length === 0 ? (
-        <Text color="gray">Task is active, but no busy slave is currently attached.</Text>
-      ) : visibleLiveLogs.length === 0 ? (
-        <Text color="gray">Waiting for slave logs...</Text>
-      ) : (
-        visibleLiveLogs.map((entry) => (
-          <Box key={`live-${entry.timestamp}-${entry.slaveId}-${entry.source}`}>
-            {renderLogLine(entry, showSlaveId)}
-          </Box>
-        ))
-      )}
-      <Box>
-        <Text color="gray">Press 'l' to view full task logs</Text>
+      <Box flexDirection="column" height={liveLogSectionHeight}>
+        <Box>
+          <Text bold color="cyan">
+            {liveTitle}
+          </Text>
+          <Text color="gray"> ({liveLogs.length} lines)</Text>
+        </Box>
+        {activeSlaves.length === 0 ? (
+          <Text color="gray">Task is active, but no busy slave is currently attached.</Text>
+        ) : visibleLiveLogs.length === 0 ? (
+          <Text color="gray">Waiting for slave logs...</Text>
+        ) : (
+          visibleLiveLogs.map((entry) => (
+            <Box key={`live-${entry.timestamp}-${entry.slaveId}-${entry.source}`}>
+              {renderLogLine(entry, showSlaveId)}
+            </Box>
+          ))
+        )}
       </Box>
     </Box>
   )

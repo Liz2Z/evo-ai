@@ -24,3 +24,31 @@ export function getGroupedTaskIds(tasks: Task[]): string[] {
   }
   return orderedIds
 }
+
+export function getAdjacentGroupTaskId(
+  tasks: Task[],
+  selectedTaskId: string | null,
+  direction: 'left' | 'right',
+): string | null {
+  const groups = GROUP_ORDER.map((status) => ({
+    status,
+    tasks: tasks.filter((task) => getGroupKey(task.status) === status),
+  })).filter((group) => group.tasks.length > 0)
+
+  if (groups.length === 0) return null
+
+  if (!selectedTaskId) return groups[0]?.tasks[0]?.id || null
+
+  const currentGroupIndex = groups.findIndex((group) =>
+    group.tasks.some((task) => task.id === selectedTaskId),
+  )
+
+  if (currentGroupIndex === -1) return groups[0]?.tasks[0]?.id || null
+
+  const offset = direction === 'left' ? -1 : 1
+  const targetGroup = groups[currentGroupIndex + offset]
+
+  if (!targetGroup) return selectedTaskId
+
+  return targetGroup.tasks[0]?.id || selectedTaskId
+}

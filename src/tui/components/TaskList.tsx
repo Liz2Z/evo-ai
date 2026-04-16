@@ -1,7 +1,12 @@
 import { Box, Text, useInput } from 'ink'
 import type React from 'react'
 import type { Task } from '../../types'
-import { GROUP_ORDER, getGroupedTaskIds, getGroupKey } from './taskListModel'
+import {
+  GROUP_ORDER,
+  getAdjacentGroupTaskId,
+  getGroupedTaskIds,
+  getGroupKey,
+} from './taskListModel'
 
 interface TaskListProps {
   tasks: Task[]
@@ -37,6 +42,15 @@ export function TaskList({ tasks, selectedTaskId, onSelect, maxHeight }: TaskLis
     } else if (key.downArrow && flatIds.length > 0) {
       const next = currentIndex < flatIds.length - 1 ? currentIndex + 1 : flatIds.length - 1
       onSelect(flatIds[next])
+    } else if (key.leftArrow || key.rightArrow) {
+      const nextTaskId = getAdjacentGroupTaskId(
+        tasks,
+        selectedTaskId,
+        key.leftArrow ? 'left' : 'right',
+      )
+      if (nextTaskId && nextTaskId !== selectedTaskId) {
+        onSelect(nextTaskId)
+      }
     }
   })
 

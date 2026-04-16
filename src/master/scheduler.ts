@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { getControlFilePath, getHealthFilePath } from '../runtime/paths'
-import { runInspector, runReviewer, runWorker } from '../slave/launcher'
+import { createSlaveHandle, parseInspectorTasksSummary, type SlaveHandle } from '../slave/launcher'
 import type { Config, MasterState, Question, ReviewResult, Task, TaskResult } from '../types'
 import type {
   HeartbeatTickEvent,
@@ -19,6 +19,7 @@ import {
   getWorktreeMissionAssociations,
   hasUncommittedChanges,
   listWorktrees,
+  mergeBranchIntoBase,
   removeWorktree,
   validateMissionWorkspaceBranch,
 } from '../utils/git'
@@ -44,6 +45,7 @@ import {
 import { hasChineseCharacters } from '../utils/task-text'
 import {
   type CommitTaskResult,
+  type CompleteMissionResult,
   createMasterRuntime,
   type MasterRuntime,
   type MasterRuntimeContext,
@@ -83,6 +85,7 @@ export class Master extends EventEmitter {
   private isPaused = false
   private heartbeatTimer: ReturnType<typeof setTimeout> | null = null
   private currentTurnPromise: Promise<void> | null = null
+  private readonly activeSlaveHandles = new Map<string, SlaveHandle>()
   private readonly tools: MasterTools
   private runtime: MasterRuntime
   private readonly logger: Logger
@@ -159,6 +162,10 @@ export class Master extends EventEmitter {
       clearTimeout(this.heartbeatTimer)
       this.heartbeatTimer = null
     }
+
+    const activeHandles = [...this.activeSlaveHandles.values()]
+    this.activeSlaveHandles.clear()
+    await Promise.allSettled(activeHandles.map((handle) => handle.cancel()))
 
     try {
       await this.runtime.dispose()
@@ -438,6 +445,7 @@ export class Master extends EventEmitter {
         return { status: 'retried', taskId }
       },
       commit_current_task: async () => this.commitCurrentTask(),
+      complete_mission: async () => this.completeMission(),
       ask_human: async ({ question, options }) => {
         const existing = this.state.pendingQuestions.find(
           (item) => !item.answered && item.question.trim() === question.trim(),
@@ -702,10 +710,37 @@ export class Master extends EventEmitter {
     this.activeSlaves++
 
     const recentDecisions = await this.getRecentDecisions()
-    void runInspector(this.state.mission, recentDecisions)
+    const launcher = createSlaveHandle({
+      type: 'inspector',
+      task: {
+        id: 'inspection',
+        type: 'other',
+        status: 'running',
+        priority: 1,
+        description: '检查代码库并生成后续任务',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attemptCount: 0,
+        maxAttempts: 1,
+        reviewHistory: [],
+      },
+      mission: this.state.mission,
+      recentDecisions,
+      onError: (error) => this.logger.error(`Inspector failed: ${error}`),
+    })
+    this.activeSlaveHandles.set('inspection', launcher)
+
+    void launcher
+      .start()
+      .then(() => launcher.execute())
       .then(async (newTasks) => {
+        this.activeSlaveHandles.delete('inspection')
         const existingTasks = await loadTasks()
-        const { accepted, dropped } = sanitizeInspectorTasks(newTasks, existingTasks)
+        const rawTasks =
+          newTasks && 'summary' in newTasks
+            ? this.parseInspectorTasksFromResult(newTasks.summary, this.state.mission)
+            : []
+        const { accepted, dropped } = sanitizeInspectorTasks(rawTasks, existingTasks)
         const createdTaskIds: string[] = []
         for (const task of accepted) {
           await addTask(task)
@@ -732,6 +767,7 @@ export class Master extends EventEmitter {
         await this.requestTurn(`inspector_completed:${reason}`)
       })
       .catch(async (error) => {
+        this.activeSlaveHandles.delete('inspection')
         this.activeSlaves = Math.max(0, this.activeSlaves - 1)
         this.state.currentStage = 'idle'
         await addHistoryEntry({
@@ -778,18 +814,24 @@ export class Master extends EventEmitter {
     this.activeSlaves++
     const recentDecisions = await this.getRecentDecisions()
     const onLog = (event: LogMessageEvent) => this.handleLogEvent(event)
-
-    void runWorker(
-      { ...freshTask, status: 'running' },
-      this.state.mission,
+    const launcher = createSlaveHandle({
+      type: 'worker',
+      task: { ...freshTask, status: 'running' },
+      mission: this.state.mission,
       recentDecisions,
       additionalContext,
-      workspace.path,
+      worktreePath: workspace.path,
       onLog,
-    )
+    })
+    this.activeSlaveHandles.set(freshTask.id, launcher)
+
+    void launcher
+      .start()
+      .then(() => launcher.execute())
       .then(async (result) => {
+        this.activeSlaveHandles.delete(freshTask.id)
         if (result) {
-          await this.handleWorkerResult(freshTask.id, result)
+          await this.handleWorkerResult(freshTask.id, result as TaskResult)
         } else {
           await this.failTask(freshTask.id, 'Worker returned no result')
         }
@@ -797,6 +839,7 @@ export class Master extends EventEmitter {
         await this.requestTurn(`worker_completed:${freshTask.id}`)
       })
       .catch(async (error) => {
+        this.activeSlaveHandles.delete(freshTask.id)
         await this.failTask(freshTask.id, error instanceof Error ? error.message : String(error))
         this.activeSlaves = Math.max(0, this.activeSlaves - 1)
         await this.requestTurn(`worker_failed:${freshTask.id}`)
@@ -861,18 +904,24 @@ export class Master extends EventEmitter {
     this.activeSlaves++
     const recentDecisions = await this.getRecentDecisions()
     const onLog = (event: LogMessageEvent) => this.handleLogEvent(event)
-
-    void runReviewer(
+    const launcher = createSlaveHandle({
+      type: 'reviewer',
       task,
-      this.state.mission,
+      mission: this.state.mission,
       recentDecisions,
-      diff,
-      this.state.missionWorktree,
+      additionalContext: `## Code Changes to Review\n\`\`\`diff\n${diff}\n\`\`\``,
+      worktreePath: this.state.missionWorktree,
       onLog,
-    )
+    })
+    this.activeSlaveHandles.set(task.id, launcher)
+
+    void launcher
+      .start()
+      .then(() => launcher.execute())
       .then(async (result) => {
+        this.activeSlaveHandles.delete(task.id)
         if (result) {
-          await this.handleReviewResult(task.id, result)
+          await this.handleReviewResult(task.id, result as ReviewResult)
         } else {
           await this.failTask(task.id, 'Reviewer returned no result')
         }
@@ -880,6 +929,7 @@ export class Master extends EventEmitter {
         await this.requestTurn(`review_completed:${task.id}`)
       })
       .catch(async (error) => {
+        this.activeSlaveHandles.delete(task.id)
         await this.failTask(task.id, error instanceof Error ? error.message : String(error))
         this.activeSlaves = Math.max(0, this.activeSlaves - 1)
         await this.requestTurn(`review_failed:${task.id}`)
@@ -1064,6 +1114,94 @@ export class Master extends EventEmitter {
     })
 
     return { status: 'committed', taskId, message: result.message }
+  }
+
+  private async completeMission(): Promise<CompleteMissionResult> {
+    const tasks = await loadTasks()
+    const openTasks = tasks.filter((task) =>
+      ['pending', 'running', 'reviewing'].includes(task.status),
+    )
+
+    if (this.activeSlaves > 0 || this.state.currentTaskId) {
+      return { status: 'noop', message: 'Mission still has active execution' }
+    }
+
+    if (tasks.length === 0) {
+      return { status: 'noop', message: 'Mission has no tasks to complete' }
+    }
+
+    if (openTasks.length > 0) {
+      return {
+        status: 'noop',
+        message: `Mission still has unfinished tasks: ${openTasks.map((task) => task.id).join(', ')}`,
+      }
+    }
+
+    if (!this.state.missionBranch || !this.state.missionWorktree) {
+      return { status: 'noop', message: 'Mission workspace already cleaned up' }
+    }
+
+    this.state.currentStage = 'integrating'
+    await saveMasterState(this.state)
+    this.emitMasterState()
+
+    const mergeResult = await mergeBranchIntoBase(
+      this.state.missionBranch,
+      this.config.developBranch,
+      process.cwd(),
+    )
+
+    if (!mergeResult.success) {
+      this.state.currentStage = 'idle'
+      await saveMasterState(this.state)
+      this.emitMasterState()
+      await addHistoryEntry({
+        timestamp: new Date().toISOString(),
+        type: 'error',
+        summary: `Mission merge failed: ${mergeResult.message}`,
+      })
+      return { status: 'failed', message: mergeResult.message }
+    }
+
+    const worktreePath = this.state.missionWorktree
+    const branchName = this.state.missionBranch
+
+    await updateMissionHistoryEntry(this.state.mission, {
+      endedAt: new Date().toISOString(),
+      taskCount: tasks.length,
+    })
+
+    const removed = await removeWorktree(worktreePath, { allowAssociated: true })
+    const deleted = await deleteBranch(branchName)
+
+    this.state.missionWorktree = undefined
+    this.state.missionBranch = undefined
+    this.state.currentStage = 'idle'
+    await saveMasterState(this.state)
+    this.emitMasterState()
+
+    this.emit('worktree:change', {
+      mission: this.state.mission,
+      action: 'removed',
+      path: worktreePath,
+      branch: branchName,
+    } satisfies WorktreeChangeEvent)
+
+    await addHistoryEntry({
+      timestamp: new Date().toISOString(),
+      type: 'decision',
+      summary: `Mission merged into ${this.config.developBranch}`,
+      details: {
+        missionBranch: branchName,
+        worktreeRemoved: removed,
+        branchDeleted: deleted,
+      },
+    })
+
+    return {
+      status: 'merged',
+      message: `Merged ${branchName} into ${this.config.developBranch}`,
+    }
   }
 
   private buildCommitMessage(task: Task): string {
@@ -1254,11 +1392,21 @@ export class Master extends EventEmitter {
 
   private async recoverStaleRuntimeState(): Promise<void> {
     const slaves = await loadSlaves()
-    const recoveredSlaves = slaves.map((slave) =>
-      slave.status === 'busy'
-        ? { ...slave, status: 'idle' as const, currentTask: undefined }
-        : slave,
-    )
+    const activeTaskIds = new Set<string>()
+    const recoveredSlaves = slaves.map((slave) => {
+      const processAlive = slave.pid ? this.isProcessAlive(slave.pid) : false
+      if (slave.status === 'busy' && processAlive && slave.currentTask) {
+        activeTaskIds.add(slave.currentTask)
+        return slave
+      }
+      if (slave.status !== 'busy') return slave
+      return {
+        ...slave,
+        status: 'idle' as const,
+        currentTask: undefined,
+        pid: undefined,
+      }
+    })
     if (recoveredSlaves.some((slave, index) => slave !== slaves[index])) {
       await saveSlaves(recoveredSlaves)
     }
@@ -1267,9 +1415,9 @@ export class Master extends EventEmitter {
     let changed = false
     for (const task of tasks) {
       if (task.status !== 'running' && task.status !== 'reviewing') continue
+      if (activeTaskIds.has(task.id)) continue
       changed = true
-      const recoveredStatus = this.state.currentTaskId === task.id ? task.status : 'pending'
-      await updateTask(task.id, { status: recoveredStatus })
+      await updateTask(task.id, { status: 'pending' })
     }
 
     if (changed) {
@@ -1282,6 +1430,41 @@ export class Master extends EventEmitter {
 
     if (this.state.currentStage === 'committing' && this.state.currentTaskId) {
       this.state.currentStage = 'reviewing'
+    }
+  }
+
+  private parseInspectorTasksFromResult(summary: string, mission: string): Task[] {
+    const tasks = parseInspectorTasksSummary(summary)
+    return tasks.length > 0 ? tasks : this.buildInspectorFallbackTasks(mission)
+  }
+
+  private buildInspectorFallbackTasks(mission: string): Task[] {
+    const trimmedMission = mission.trim()
+    if (!trimmedMission) return []
+    return [
+      {
+        id: `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+        type: 'other',
+        status: 'pending',
+        priority: 5,
+        description: `执行主任务目标：${trimmedMission.slice(0, 120)}`,
+        context:
+          'Inspector 回退任务：模型未返回可解析的 tasks JSON。请先落地一个最小可交付结果，再拆分后续子任务。',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attemptCount: 0,
+        maxAttempts: 3,
+        reviewHistory: [],
+      },
+    ]
+  }
+
+  private isProcessAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
     }
   }
 }

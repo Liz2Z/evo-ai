@@ -16,11 +16,11 @@ export function useLogStream(
   slaveIds?: string[],
 ): LogEntry[] {
   const [entries, setEntries] = useState<LogEntry[]>([])
-  const normalizedSlaveIds = normalizeSlaveIds(slaveIds)
-  const _slaveIdKey = normalizedSlaveIds?.join(',') || '*'
+  const _slaveIdKey = normalizeSlaveIds(slaveIds)?.join(',') || '*'
 
   useEffect(() => {
     let disposed = false
+    const normalizedSlaveIds = normalizeSlaveIds(slaveIds)
 
     if (!taskId) {
       setEntries([])
@@ -67,7 +67,7 @@ export function useLogStream(
       disposed = true
       emitter.off('log:message', onLogMessage)
     }
-  }, [emitter, taskId, normalizedSlaveIds])
+  }, [emitter, taskId, slaveIds])
 
   return entries
 }

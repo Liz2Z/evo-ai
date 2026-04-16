@@ -189,6 +189,7 @@ export function KanbanBoard({ emitter, master, heartbeatIntervalMs, onQuit }: Ka
           <Text bold color="cyan">
             TASKS
           </Text>
+          <Text color="gray">↑↓ 任务 ←→ 阶段</Text>
           <TaskList
             tasks={tasks}
             selectedTaskId={selectedTaskId}

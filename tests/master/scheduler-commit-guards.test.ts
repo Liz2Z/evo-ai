@@ -1,11 +1,24 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
+import { existsSync } from 'node:fs'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Master } from '../../src/master/scheduler'
 import type { Config, ReviewResult, Task } from '../../src/types'
-import { ensureMissionWorkspace, removeWorktree, runGit } from '../../src/utils/git'
-import { addTask, getTask } from '../../src/utils/storage'
+import {
+  commitAllChanges,
+  ensureMissionWorkspace,
+  removeWorktree,
+  runGit,
+} from '../../src/utils/git'
+import {
+  addMissionHistoryEntry,
+  addTask,
+  getTask,
+  loadMasterState,
+  loadMissionHistory,
+  saveTasks,
+} from '../../src/utils/storage'
 
 const originalCwd = process.cwd()
 let repoDir: string
@@ -47,6 +60,10 @@ beforeAll(async () => {
 afterAll(async () => {
   process.chdir(originalCwd)
   await rm(repoDir, { recursive: true, force: true })
+})
+
+beforeEach(async () => {
+  await saveTasks([])
 })
 
 function runCmd(cmd: string, args: string[], cwd: string): void {
@@ -177,5 +194,55 @@ describe('Master commit_current_task guards', () => {
     } finally {
       await removeWorktree(workspace.path).catch(() => {})
     }
+  })
+
+  test('没有 pending 任务时会直接合并 mission 分支，即使存在 failed 任务', async () => {
+    const mission = `complete-mission-${Date.now()}`
+    const workspace = await ensureMissionWorkspace(mission, 'main')
+    if (!workspace) throw new Error('workspace missing')
+
+    await addMissionHistoryEntry({
+      mission,
+      startedAt: new Date().toISOString(),
+      worktreeBranch: workspace.branch,
+      worktreePath: workspace.path,
+      taskCount: 2,
+    })
+
+    const completedTask = createTask(`task-complete-${Date.now()}`, { status: 'completed' })
+    const failedTask = createTask(`task-failed-${Date.now()}`, {
+      status: 'failed',
+      reviewHistory: [],
+      attemptCount: 2,
+    })
+    await addTask(completedTask)
+    await addTask(failedTask)
+    await writeFile(join(workspace.path, 'mission-complete.txt'), 'merge target\n')
+    const commit = await commitAllChanges('task(test): mission completion', workspace.path)
+    expect(commit.success).toBe(true)
+
+    const master = new Master(baseConfig, mission) as any
+    master.state.missionWorktree = workspace.path
+    master.state.missionBranch = workspace.branch
+    master.state.currentStage = 'idle'
+
+    const result = await master.completeMission()
+    expect(result.status).toBe('merged')
+    expect(existsSync(workspace.path)).toBe(false)
+
+    const mainLog = await runGit(['log', '--oneline', '-1'], repoDir)
+    expect(mainLog.stdout).toContain('Merge')
+    expect(existsSync(join(repoDir, 'mission-complete.txt'))).toBe(true)
+
+    const branch = await runGit(['rev-parse', '--verify', workspace.branch], repoDir)
+    expect(branch.exitCode).not.toBe(0)
+
+    const state = await loadMasterState()
+    expect(state.missionWorktree).toBeUndefined()
+    expect(state.missionBranch).toBeUndefined()
+
+    const missionHistory = await loadMissionHistory()
+    const historyEntry = missionHistory.find((entry) => entry.mission === mission && entry.endedAt)
+    expect(historyEntry?.endedAt).toBeDefined()
   })
 })
