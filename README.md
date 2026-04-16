@@ -24,8 +24,9 @@ The system uses git worktrees for isolated task execution, ensuring parallel wor
 - **Human-in-the-Loop**: Manager can ask questions when it needs clarification
 - **State Persistence**: All state is saved to disk for resilience
 - **Task Prioritization**: Tasks are prioritized and scheduled automatically
-- **TUI Interface**: Real-time terminal UI for monitoring system state
-- **Event-Driven Architecture**: Event log for auditability and recovery
+- **TUI Interface**: Terminal-based UI (KanbanBoard, StatusBar, InputBar, DetailPanel, TaskList) for real-time monitoring
+- **Event-Driven Architecture**: Complete event log (heartbeat, task/agent/worktree lifecycle) for auditability and recovery
+- **SDK-Powered Agents**: Built on `@mariozechner/pi-coding-agent` for robust LLM session management
 
 ## 🏗️ Architecture
 
@@ -52,17 +53,44 @@ The system uses git worktrees for isolated task execution, ensuring parallel wor
 ┌───────────────┐ ┌───────────────┐ ┌───────────────┐
 │ Git Worktree  │ │ Git Worktree  │ │ Git Worktree  │
 └───────────────┘ └───────────────┘ └───────────────┘
-
-        ┌─────────────────────────────────────┐
-        │         TUI Interface               │
-        │  (Real-time monitoring & control)   │
-        └─────────────────────────────────────┘
-
-        ┌─────────────────────────────────────┐
-        │    pi-coding-agent SDK              │
-        │  (Agent session management)         │
-        └─────────────────────────────────────┘
 ```
+
+### TUI System
+
+Evo-AI includes a terminal-based user interface (TUI) for real-time monitoring and control. Built with the Ink framework, it provides:
+
+- **KanbanBoard**: Visual task board with drag-and-drop workflow management
+- **StatusBar**: Real-time system status display (active agents, pending tasks, manager state)
+- **InputBar**: Command input interface with auto-completion and command history
+- **DetailPanel**: Detailed view for tasks, agents, and logs
+- **TaskList**: Filterable, searchable task listing with status indicators
+
+Launch the TUI with `bun run src/index.ts --tui`.
+
+### Event System
+
+All system activities are logged as typed events for auditability and state recovery:
+
+- **heartbeat**: Periodic heartbeat ticks with system phase and active agent count
+- **task:status_change**: Task status transitions (pending → running → completed/failed)
+- **agent:status_change**: Worker agent lifecycle events (launching → running → completed)
+- **worktree:change**: Git worktree creation and removal events
+- **manager:state**: Full manager state snapshots for persistence
+- **manager:activity**: Manager turn lifecycle (started/completed/failed/skipped)
+- **projection:updated**: Read model updates for TUI and query optimization
+
+Events are stored in `.evo-ai/.data/events/` and can be replayed for recovery.
+
+### pi-coding-agent Integration
+
+Evo-AI is built on top of the `@mariozechner/pi-coding-agent` SDK, which provides:
+
+- **Session Management**: Creates and manages agent sessions with configurable models
+- **Tool Orchestration**: Handles tool calls, responses, and streaming outputs
+- **Message Handling**: Manages message history and context between turns
+- **Agent Prompts**: Defines system prompts and behaviors for each agent type
+
+The SDK abstracts the complexity of LLM interaction, allowing Evo-AI to focus on task orchestration and multi-agent coordination.
 
 ## 🚀 Setup
 
@@ -255,9 +283,14 @@ evo-ai/
 │   ├── tui/
 │   │   ├── index.tsx         # TUI entry point
 │   │   ├── components/       # TUI React components
+│   │   │   ├── KanbanBoard.tsx    # Visual task board component
+│   │   │   ├── StatusBar.tsx      # System status display
+│   │   │   ├── InputBar.tsx       # Command input interface
+│   │   │   ├── DetailPanel.tsx    # Detail view for tasks/agents
+│   │   │   └── TaskList.tsx       # Filterable task listing
 │   │   └── hooks/            # TUI React hooks
 │   ├── types/
-│   │   ├── events.ts         # Event type definitions
+│   │   ├── events.ts         # Event type definitions (heartbeat, task:status_change, agent:status_change, worktree:change, manager:state, manager:activity)
 │   │   └── index.ts          # TypeScript type definitions
 │   └── utils/
 │       ├── git.ts            # Git operations
@@ -469,4 +502,4 @@ pm2 start "bun run src/index.ts" --name evo-ai
 - [TypeScript Documentation](https://www.typescriptlang.org/docs/)
 - [Bun Documentation](https://bun.sh/docs)
 - [Git Worktree Documentation](https://git-scm.com/docs/git-worktree)
-- [pi-coding-agent SDK](https://github.com/mariozechner/pi-coding-agent)
+- [pi-coding-agent SDK](https://github.com/mariozechner/pi-coding-agent) - Underlying agent session management framework
