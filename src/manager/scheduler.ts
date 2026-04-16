@@ -46,7 +46,7 @@ import {
   saveManagerState,
   saveTasks,
   updateMissionHistoryEntry,
-  updateTask,
+  updateTask as updateTaskStorage,
 } from '../utils/storage'
 import { hasChineseCharacters } from '../utils/task-text'
 import {
@@ -61,6 +61,25 @@ import {
   type WorkerAssignmentResult,
 } from './runtime'
 import { sanitizeInspectorTasks } from './task-sanitizer'
+import {
+  askHuman,
+  assignReviewer as assignReviewerTool,
+  assignWorker as assignWorkerTool,
+  cancelTaskTool,
+  commitCurrentTaskTool,
+  completeMissionTool,
+  createTask as createTaskTool,
+  ensureMissionWorkspace as ensureMissionWorkspaceTool,
+  getCurrentTaskDiff,
+  getManagerSnapshot,
+  getRecentHistory,
+  getTask as getTaskTool,
+  listAgents,
+  listTasks,
+  retryTask,
+  launchInspector as launchInspectorTool,
+  updateTask as updateTaskTool,
+} from './tools'
 
 interface ManagerOptions {
   runtimeFactory?: (config: Config, state: ManagerState) => ManagerRuntime
@@ -273,7 +292,7 @@ export class Manager extends EventEmitter {
   }
 
   async cancelTask(taskId: string): Promise<boolean> {
-    const task = await updateTask(taskId, { status: 'failed' })
+    const task = await updateTaskStorage(taskId, { status: 'failed' })
     if (task && this.state.currentTaskId === taskId) {
       this.state.currentTaskId = undefined
       this.state.currentStage = 'idle'
@@ -362,7 +381,7 @@ export class Manager extends EventEmitter {
 
     if (this.state.currentTaskId) {
       this.logger.info(`Abandoning current task: ${this.state.currentTaskId}`)
-      await updateTask(this.state.currentTaskId, { status: 'failed' })
+      await updateTaskStorage(this.state.currentTaskId, { status: 'failed' })
       clearTaskLogBuffer(this.state.currentTaskId)
       this.state.currentTaskId = undefined
     }
@@ -413,7 +432,7 @@ export class Manager extends EventEmitter {
 
     for (const task of tasks) {
       if (['pending', 'running', 'reviewing'].includes(task.status)) {
-        await updateTask(task.id, { status: 'failed' })
+        await updateTaskStorage(task.id, { status: 'failed' })
         clearTaskLogBuffer(task.id)
       }
     }
@@ -440,119 +459,118 @@ export class Manager extends EventEmitter {
 
   private createTools(): ManagerTools {
     return {
-      get_manager_snapshot: async () => {
-        await this.refreshActiveAgents()
-        await this.refreshActiveAgents()
-        return {
-          mission: this.state.mission,
-          runtimeMode: this.state.runtimeMode,
-          currentPhase: this.state.currentPhase,
-          turnStatus: this.state.turnStatus,
-          activeAgents: this.activeAgents,
-          maxConcurrency: 1,
-          pendingCount: (await loadTasks()).filter((task) => task.status === 'pending').length,
-          pendingQuestions: this.state.pendingQuestions,
-          lastHeartbeat: this.state.lastHeartbeat,
-          lastDecisionAt: this.state.lastDecisionAt,
-          skippedWakeups: this.state.skippedWakeups,
-          lastSkippedTriggerReason: this.state.lastSkippedTriggerReason,
-          runtimeSessionSummary: this.state.runtimeSessionSummary,
-          missionBranch: this.state.missionBranch,
-          missionWorktree: this.state.missionWorktree,
-          currentTaskId: this.state.currentTaskId,
-          currentStage: this.state.currentStage,
-          pendingUserMessages: this.state.pendingUserMessages || [],
-        }
-      },
-      list_tasks: async (input) => {
-        const tasks = await loadTasks()
-        if (!input?.status) return tasks
-        const statuses = Array.isArray(input.status) ? input.status : [input.status]
-        return tasks.filter((task) => statuses.includes(task.status))
-      },
-      list_agents: async () => loadAgents(),
-      get_task: async ({ taskId }) => this.getTaskById(taskId),
-      get_recent_history: async (input) => {
-        const history = await loadHistory()
-        return history.slice(-(input?.limit || 20))
-      },
-      get_current_task_diff: async () => {
-        if (!this.state.missionWorktree) return ''
-        return getUncommittedDiff(this.state.missionWorktree)
-      },
-      ensure_mission_workspace: async () => this.ensureMissionWorkspaceReady(),
-      launch_inspector: async ({ reason }) => this.launchInspector(reason),
-      assign_worker: async ({ taskId, additionalContext }) => {
-        const task = await this.getTaskById(taskId)
-        if (!task) {
-          return {
-            status: 'not_found',
-            taskId,
-            message: 'Task not found',
-          } satisfies WorkerAssignmentResult
-        }
-        return this.assignWorker(task, additionalContext)
-      },
-      assign_reviewer: async ({ taskId }) => {
-        const task = await this.getTaskById(taskId)
-        if (!task) {
-          return {
-            status: 'not_found',
-            taskId,
-            message: 'Task not found',
-          } satisfies ReviewerAssignmentResult
-        }
-        return this.assignReviewer(task)
-      },
-      create_task: async ({ description, type = 'other', priority = 3, context }) => {
-        const normalizedDescription = description.trim()
-        if (!hasChineseCharacters(normalizedDescription)) {
-          throw new Error('自动创建任务失败：任务描述必须使用中文')
-        }
-
-        const task = await this.addTaskManually(normalizedDescription, type, priority)
-        if (context) {
-          const updated = await updateTask(task.id, { context: context.trim() })
-          return updated || task
-        }
-        return task
-      },
-      update_task: async ({ taskId, patch }) => updateTask(taskId, patch),
-      cancel_task: async ({ taskId }) => ({
-        status: (await this.cancelTask(taskId)) ? 'cancelled' : 'noop',
-        taskId,
-      }),
-      retry_task: async ({ taskId, additionalContext }) => {
-        const task = await this.getTaskById(taskId)
-        if (!task) return { status: 'not_found', taskId }
-        if (task.status !== 'failed') return { status: 'noop', taskId }
-        const context = additionalContext
-          ? task.context
-            ? `${task.context}\n\n${additionalContext}`
-            : additionalContext
-          : task.context
-        await updateTask(task.id, { status: 'pending', context })
-        return { status: 'retried', taskId }
-      },
-      commit_current_task: async () => this.commitCurrentTask(),
-      complete_mission: async () => this.completeMission(),
-      ask_human: async ({ question, options }) => {
-        const existing = this.state.pendingQuestions.find(
-          (item) => !item.answered && item.question.trim() === question.trim(),
-        )
-        if (existing) return existing
-        const created: Question = {
-          id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          question,
-          options: options || [],
-          createdAt: new Date().toISOString(),
-          source: this.state.currentPhase,
-        }
-        await addQuestion(created)
-        this.state.pendingQuestions = [...this.state.pendingQuestions, created]
-        await saveManagerState(this.state)
-        return created
-      },
+      get_manager_snapshot: async () =>
+        getManagerSnapshot(this.state, this.refreshActiveAgents.bind(this), this.activeAgents),
+      list_tasks: async (input) => listTasks(input),
+      list_agents: async () => listAgents(),
+      get_task: async ({ taskId }) => getTaskTool({ taskId }),
+      get_recent_history: async (input) => getRecentHistory(input),
+      get_current_task_diff: async () => getCurrentTaskDiff(this.state.missionWorktree),
+      ensure_mission_workspace: async () =>
+        ensureMissionWorkspaceTool({ ensureMissionWorkspaceReady: this.ensureMissionWorkspaceReady.bind(this) }),
+      launch_inspector: async ({ reason }) =>
+        launchInspectorTool(
+          { reason },
+          {
+            refreshActiveAgents: this.refreshActiveAgents.bind(this),
+            activeAgents: this.activeAgents,
+            currentTaskId: this.state.currentTaskId,
+            loadTasks,
+            setState: async (updates) => {
+              Object.assign(this.state, updates)
+              await saveManagerState(this.state)
+            },
+            emitManagerState: this.emitManagerState.bind(this),
+            incrementActiveAgents: () => {
+              this.activeAgents++
+            },
+            getRecentDecisions: this.getRecentDecisions.bind(this),
+            createAgentHandle: (config: any) => createAgentHandle(config),
+            activeAgentHandles: this.activeAgentHandles,
+            addHistoryEntry,
+            sanitizeInspectorTasks,
+            parseInspectorTasksFromResult: this.parseInspectorTasksFromResult.bind(this),
+            addTask,
+            requestTurn: this.requestTurn.bind(this),
+            logger: this.logger,
+            state: this.state,
+          },
+        ),
+      assign_worker: async ({ taskId, additionalContext }) =>
+        assignWorkerTool(
+          { taskId, additionalContext },
+          {
+            getTaskById: this.getTaskById.bind(this),
+            ensureMissionWorkspaceReady: this.ensureMissionWorkspaceReady.bind(this),
+            updateTask: updateTaskStorage,
+            setState: async (updates) => {
+              Object.assign(this.state, updates)
+              await saveManagerState(this.state)
+            },
+            emitTaskStatusChange: this.emitTaskStatusChange.bind(this),
+            emitManagerState: this.emitManagerState.bind(this),
+            incrementActiveAgents: () => {
+              this.activeAgents++
+            },
+            getRecentDecisions: this.getRecentDecisions.bind(this),
+            createAgentHandle: (config: any) => createAgentHandle(config),
+            activeAgentHandles: this.activeAgentHandles,
+            requestTurn: this.requestTurn.bind(this),
+            handleWorkerResult: this.handleWorkerResult.bind(this),
+            failTask: this.failTask.bind(this),
+            activeAgents: this.activeAgents,
+            state: this.state,
+          },
+        ),
+      assign_reviewer: async ({ taskId }) =>
+        assignReviewerTool(
+          { taskId },
+          {
+            getTaskById: this.getTaskById.bind(this),
+            validateMissionWorktree: this.validateMissionWorktree.bind(this),
+            setState: async (updates) => {
+              Object.assign(this.state, updates)
+              await saveManagerState(this.state)
+            },
+            emitManagerState: this.emitManagerState.bind(this),
+            incrementActiveAgents: () => {
+              this.activeAgents++
+            },
+            getRecentDecisions: this.getRecentDecisions.bind(this),
+            createAgentHandle: (config: any) => createAgentHandle(config),
+            activeAgentHandles: this.activeAgentHandles,
+            requestTurn: this.requestTurn.bind(this),
+            handleReviewResult: this.handleReviewResult.bind(this),
+            failTask: this.failTask.bind(this),
+            activeAgents: this.activeAgents,
+            state: this.state,
+          },
+        ),
+      create_task: async ({ description, type = 'other', priority = 3, context }) =>
+        createTaskTool({ description, type, priority, context }, {
+          addTaskManually: this.addTaskManually.bind(this),
+          updateTask: updateTaskStorage,
+        }),
+      update_task: async ({ taskId, patch }) => updateTaskTool({ taskId, patch }),
+      cancel_task: async ({ taskId }) =>
+        cancelTaskTool({ taskId }, { cancelTask: this.cancelTask.bind(this) }),
+      retry_task: async ({ taskId, additionalContext }) =>
+        retryTask({ taskId, additionalContext }, { getTaskById: this.getTaskById.bind(this) }),
+      commit_current_task: async () =>
+        commitCurrentTaskTool(undefined, { commitCurrentTask: this.commitCurrentTask.bind(this) }),
+      complete_mission: async () =>
+        completeMissionTool(undefined, { completeMission: this.completeMission.bind(this) }),
+      ask_human: async ({ question, options }) =>
+        askHuman(
+          { question, options },
+          {
+            state: this.state,
+            setState: async (updates) => {
+              Object.assign(this.state, updates)
+              await saveManagerState(this.state)
+            },
+          },
+        ),
     }
   }
 
@@ -962,7 +980,7 @@ export class Manager extends EventEmitter {
     }
 
     const beforeStatus = freshTask.status
-    await updateTask(freshTask.id, { status: 'running' })
+    await updateTaskStorage(freshTask.id, { status: 'running' })
     this.state.currentTaskId = freshTask.id
     this.state.currentStage = 'working'
     await saveManagerState(this.state)
@@ -1014,7 +1032,7 @@ export class Manager extends EventEmitter {
     if (!latestTask) return
 
     if (result.status === 'completed') {
-      await updateTask(taskId, { status: 'reviewing' })
+      await updateTaskStorage(taskId, { status: 'reviewing' })
       this.state.currentTaskId = taskId
       this.state.currentStage = 'reviewing'
       await saveManagerState(this.state)
@@ -1122,7 +1140,7 @@ export class Manager extends EventEmitter {
     })
 
     if (result.verdict === 'approve') {
-      await updateTask(taskId, {
+      await updateTaskStorage(taskId, {
         status: 'reviewing',
         attemptCount: nextAttempt,
         reviewHistory,
@@ -1135,7 +1153,7 @@ export class Manager extends EventEmitter {
     }
 
     if (result.verdict === 'reject' || nextAttempt >= latestTask.maxAttempts) {
-      await updateTask(taskId, {
+      await updateTaskStorage(taskId, {
         status: 'failed',
         attemptCount: nextAttempt,
         reviewHistory,
@@ -1155,7 +1173,7 @@ export class Manager extends EventEmitter {
     }
 
     const additionalContext = this.buildRetryContext(result)
-    await updateTask(taskId, {
+    await updateTaskStorage(taskId, {
       status: 'running',
       attemptCount: nextAttempt,
       context: latestTask.context
@@ -1262,7 +1280,7 @@ export class Manager extends EventEmitter {
       return { status: 'failed', taskId, message: result.message }
     }
 
-    await updateTask(taskId, { status: 'completed' })
+    await updateTaskStorage(taskId, { status: 'completed' })
     this.state.currentTaskId = undefined
     this.state.currentStage = 'idle'
     await saveManagerState(this.state)
@@ -1396,7 +1414,7 @@ export class Manager extends EventEmitter {
     const latestTask = await this.getTaskById(taskId)
     if (!latestTask) return
 
-    await updateTask(taskId, {
+    await updateTaskStorage(taskId, {
       status: 'failed',
       context: latestTask.context
         ? `${latestTask.context}\n\nFailure: ${reason}`
@@ -1609,7 +1627,7 @@ export class Manager extends EventEmitter {
       if (task.status !== 'running' && task.status !== 'reviewing') continue
       if (activeTaskIds.has(task.id)) continue
       changed = true
-      await updateTask(task.id, { status: 'pending' })
+      await updateTaskStorage(task.id, { status: 'pending' })
     }
 
     let stateChanged = false
