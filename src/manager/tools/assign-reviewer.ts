@@ -1,21 +1,22 @@
-import type { Task } from '../../types'
+import type { ReviewResult, Task } from '../../types'
 import { getUncommittedDiff } from '../../utils/git'
 import type { ReviewerAssignmentResult } from '../runtime'
+import type { AgentHandle, AgentOptions } from '../../agents/launcher'
 
 export interface AssignReviewerDeps {
   getTaskById: (taskId: string) => Promise<Task | null>
   validateMissionWorktree: () => string | null
-  setState: (updates: any) => Promise<void>
+  setState: (updates: Partial<{ currentTaskId: string; currentStage: string }>) => Promise<void>
   emitManagerState: () => void
   incrementActiveAgents: () => void
   getRecentDecisions: () => Promise<string[]>
-  createAgentHandle: (config: any) => any
-  activeAgentHandles: Map<string, any>
+  createAgentHandle: (config: AgentOptions) => AgentHandle
+  activeAgentHandles: Map<string, AgentHandle>
   requestTurn: (reason: string) => Promise<void>
-  handleReviewResult: (taskId: string, result: any) => Promise<void>
+  handleReviewResult: (taskId: string, result: ReviewResult) => Promise<void>
   failTask: (taskId: string, reason: string) => Promise<void>
   activeAgents: number
-  state: { currentTaskId?: string | undefined; currentStage: string; mission: string }
+  state: { currentTaskId?: string; currentStage: string; mission: string }
 }
 
 export async function assignReviewer(
@@ -80,16 +81,18 @@ export async function assignReviewer(
   void launcher
     .start()
     .then(() => launcher.execute())
-    .then(async (result: any) => {
+    .then(async (result) => {
       activeAgentHandles.delete(taskId)
-      if (result) {
+      if (result && 'verdict' in result && 'confidence' in result) {
         await handleReviewResult(taskId, result)
-      } else {
+      } else if (!result) {
         await failTask(taskId, 'Reviewer returned no result')
+      } else {
+        await failTask(taskId, 'Reviewer returned unexpected result type')
       }
       await requestTurn(`review_completed:${taskId}`)
     })
-    .catch(async (error: any) => {
+    .catch(async (error) => {
       activeAgentHandles.delete(taskId)
       await failTask(taskId, error instanceof Error ? error.message : String(error))
       await requestTurn(`review_failed:${taskId}`)

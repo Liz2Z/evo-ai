@@ -4,7 +4,7 @@ import type { ManagerTools } from '../runtime'
 
 export interface CreateTaskDeps {
   addTaskManually: (description: string, type?: Task['type'], priority?: number) => Promise<Task>
-  updateTask: (taskId: string, updates: any) => Promise<Task | null>
+  updateTask: (taskId: string, updates: Partial<Task>) => Promise<Task | null>
 }
 
 export async function createTask(
