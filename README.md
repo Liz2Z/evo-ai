@@ -1,13 +1,13 @@
 # Evo-AI
 
-An autonomous AI supervision system where a Master AI oversees and coordinates multiple Slave AI agents to work on software development tasks.
+An autonomous AI supervision system where a Manager AI oversees and coordinates multiple Worker agents to work on software development tasks.
 
 ## 🌟 Overview
 
-Evo-AI implements a hierarchical multi-agent system with a Master-Slave architecture:
+Evo-AI implements a hierarchical multi-agent system with a Manager architecture:
 
-- **Master AI**: Runs continuously with a heartbeat mechanism, autonomously generates tasks, coordinates Slave agents, reviews work, and makes decisions about task completion
-- **Slave Agents**: Specialized AI agents that execute specific tasks in isolated git worktrees
+- **Manager AI**: Runs continuously with a heartbeat mechanism, autonomously generates tasks, coordinates worker agents, reviews work, and makes decisions about task completion
+- **Worker Agents**: Specialized AI agents that execute specific tasks in isolated git worktrees
   - **Inspector**: Examines codebase and reports findings
   - **Worker**: Implements features, fixes bugs, refactors code
   - **Reviewer**: Reviews pull requests and code changes
@@ -16,20 +16,23 @@ The system uses git worktrees for isolated task execution, ensuring parallel wor
 
 ## ✨ Features
 
-- **Autonomous Task Generation**: Master AI generates its own tasks based on a mission statement
-- **Parallel Execution**: Multiple slave agents can work concurrently on different tasks
+- **Autonomous Task Generation**: Manager AI generates its own tasks based on a mission statement
+- **Single Mission Mode**: Focused execution on one mission at a time
 - **Isolated Workspaces**: Each task runs in its own git worktree for safety
 - **Code Review System**: Automatic review of all changes before merging
 - **Retry Logic**: Failed tasks are automatically retried with feedback
-- **Human-in-the-Loop**: Master can ask questions when it needs clarification
+- **Human-in-the-Loop**: Manager can ask questions when it needs clarification
 - **State Persistence**: All state is saved to disk for resilience
 - **Task Prioritization**: Tasks are prioritized and scheduled automatically
+- **TUI Interface**: Terminal-based UI (KanbanBoard, StatusBar, InputBar, DetailPanel, TaskList) for real-time monitoring
+- **Event-Driven Architecture**: Complete event log (heartbeat, task/agent/worktree lifecycle) for auditability and recovery
+- **SDK-Powered Agents**: Built on `@mariozechner/pi-coding-agent` for robust LLM session management
 
 ## 🏗️ Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        Master AI                             │
+│                        Manager AI                            │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
 │  │   Heartbeat │  │   Decision  │  │   Task      │         │
 │  │   Loop      │──│   Making    │──│   Queue     │         │
@@ -43,7 +46,7 @@ The system uses git worktrees for isolated task execution, ensuring parallel wor
         ▼                 ▼                 ▼
 ┌───────────────┐ ┌───────────────┐ ┌───────────────┐
 │  Inspector    │ │    Worker     │ │   Reviewer    │
-│  Slave Agent  │ │  Slave Agent  │ │  Slave Agent  │
+│  Worker Agent │ │  Worker Agent │ │  Worker Agent │
 └───────────────┘ └───────────────┘ └───────────────┘
         │                 │                 │
         ▼                 ▼                 ▼
@@ -51,6 +54,43 @@ The system uses git worktrees for isolated task execution, ensuring parallel wor
 │ Git Worktree  │ │ Git Worktree  │ │ Git Worktree  │
 └───────────────┘ └───────────────┘ └───────────────┘
 ```
+
+### TUI System
+
+Evo-AI includes a terminal-based user interface (TUI) for real-time monitoring and control. Built with the Ink framework, it provides:
+
+- **KanbanBoard**: Visual task board with drag-and-drop workflow management
+- **StatusBar**: Real-time system status display (active agents, pending tasks, manager state)
+- **InputBar**: Command input interface with auto-completion and command history
+- **DetailPanel**: Detailed view for tasks, agents, and logs
+- **TaskList**: Filterable, searchable task listing with status indicators
+
+Launch the TUI with `bun run src/index.ts --tui`.
+
+### Event System
+
+All system activities are logged as typed events for auditability and state recovery:
+
+- **heartbeat**: Periodic heartbeat ticks with system phase and active agent count
+- **task:status_change**: Task status transitions (pending → running → completed/failed)
+- **agent:status_change**: Worker agent lifecycle events (launching → running → completed)
+- **worktree:change**: Git worktree creation and removal events
+- **manager:state**: Full manager state snapshots for persistence
+- **manager:activity**: Manager turn lifecycle (started/completed/failed/skipped)
+- **projection:updated**: Read model updates for TUI and query optimization
+
+Events are stored in `.evo-ai/.data/events/` and can be replayed for recovery.
+
+### pi-coding-agent Integration
+
+Evo-AI is built on top of the `@mariozechner/pi-coding-agent` SDK, which provides:
+
+- **Session Management**: Creates and manages agent sessions with configurable models
+- **Tool Orchestration**: Handles tool calls, responses, and streaming outputs
+- **Message Handling**: Manages message history and context between turns
+- **Agent Prompts**: Defines system prompts and behaviors for each agent type
+
+The SDK abstracts the complexity of LLM interaction, allowing Evo-AI to focus on task orchestration and multi-agent coordination.
 
 ## 🚀 Setup
 
@@ -86,20 +126,20 @@ git init  # if not already initialized
 
 ## 📖 Usage
 
-### Starting the Master
+### Starting the Manager
 
 ```bash
 # First start with mission
 bun run src/index.ts -m "Improve test coverage to 80%"
 
-# Later starts can resume from master.json
+# Later starts can resume from manager state
 bun run src/index.ts
 
 # Start with custom heartbeat interval (in seconds)
 bun run src/index.ts -i 60
 
-# Start with custom concurrency level
-bun run src/index.ts -c 5
+# Start in TUI mode
+bun run src/index.ts --tui
 
 # Start in development mode (auto-reload on changes)
 bun run dev
@@ -108,7 +148,7 @@ bun run dev
 ### Monitoring and Management
 
 ```bash
-# Check master status
+# Check manager status
 bun run src/index.ts --status
 
 # List all tasks
@@ -131,18 +171,22 @@ bun run src/index.ts --answer <question-id> "your answer"
 
 | Option | Short | Description |
 |--------|-------|-------------|
-| `--mission <text>` | `-m` | Set the master's mission |
+| `--mission <text>` | `-m` | Set the manager's mission |
 | `--interval <seconds>` | `-i` | Set heartbeat interval (default: 30) |
-| `--concurrency <n>` | `-c` | Set max concurrent slaves (default: 3) |
-| `--status` | `-s` | Show master status |
+| `--concurrency <n>` | `-c` | **[DEPRECATED]** Ignored in single mission mode (fixed to 1) |
+| `--config <path>` | | Use custom config file |
+| `--tui` | | Start with TUI interface |
+| `--status` | `-s` | Show manager status |
 | `--tasks` | `-t` | List current tasks |
 | `--failed` | `-f` | List failed tasks |
 | `--add <description>` | `-a` | Add a new task manually |
 | `--cancel <taskId>` | | Cancel a task |
 | `--answer <questionId> <answer>` | | Answer a pending question |
-| `--pause` | `-p` | Pause the master |
-| `--resume` | `-r` | Resume the master |
+| `--pause` | `-p` | Pause the manager |
+| `--resume` | `-r` | Resume the manager |
 | `--help` | `-h` | Show help message |
+
+> **Note**: The `--concurrency` option is deprecated. In single mission mode, concurrency is fixed to 1 for focused execution.
 
 ## ⚙️ Configuration
 
@@ -151,18 +195,23 @@ Edit `.evo-ai/config.json` to customize the system. Secrets such as provider tok
 ```json
 {
   "heartbeatInterval": 30000,
-  "maxConcurrency": 3,
+  "maxConcurrency": 1,
   "maxRetryAttempts": 3,
   "worktreesDir": ".worktrees",
-  "developBranch": "main",
+  "developBranch": "develop",
   "models": {
-    "lite": "haiku",
-    "pro": "sonnet",
-    "max": "opus"
+    "lite": "glm-4.5-air",
+    "inspector": "glm-5.1",
+    "worker": "glm-4.7",
+    "reviewer": "glm-4.7",
+    "manager": "glm-4.7"
   },
   "provider": {
     "apiKey": "",
     "baseUrl": ""
+  },
+  "manager": {
+    "runtimeMode": "heartbeat_agent"
   }
 }
 ```
@@ -177,16 +226,19 @@ Edit `.evo-ai/config.json` to customize the system. Secrets such as provider tok
 
 ### Configuration Options
 
-- **heartbeatInterval**: How often (in ms) the Master checks for new actions
-- **maxConcurrency**: Maximum number of slave agents running simultaneously
+- **heartbeatInterval**: How often (in ms) the Manager checks for new actions
+- **maxConcurrency**: Maximum number of worker agents running simultaneously (fixed to 1 in single mission mode)
 - **maxRetryAttempts**: Maximum times a failed task will be retried
 - **worktreesDir**: Directory where git worktrees are created
 - **developBranch**: Branch where completed tasks are merged
 - **models.lite**: Light model for simple tasks such as git worktree title generation
-- **models.pro**: Default execution model for all slave roles (inspector / worker / reviewer)
-- **models.max**: Reserved master model for heavyweight master-side reasoning
-- **provider.apiKey**: API key used by the Claude Agent SDK
+- **models.inspector**: Model for inspector agent (examines codebase)
+- **models.worker**: Model for worker agent (implements features)
+- **models.reviewer**: Model for reviewer agent (reviews code changes)
+- **models.manager**: Model for manager (decision-making and task coordination)
+- **provider.apiKey**: API key used by the pi-coding-agent SDK
 - **provider.baseUrl**: Optional API base URL override
+- **manager.runtimeMode**: Runtime mode - `heartbeat_agent`, `session_agent`, or `hybrid`
 
 Configuration is resolved with deep merge priority:
 
@@ -196,7 +248,7 @@ Configuration is resolved with deep merge priority:
 - local credentials: `<repo>/.evo-ai/credentials.json`
 
 Runtime state is stored under `<repo>/.evo-ai/.data/`.
-`mission` is not part of config. On first start you must pass `--mission`; after that it is restored from `master.json`.
+`mission` is not part of config. On first start you must pass `--mission`; after that it is restored from manager state.
 `.env` is not used.
 
 ## 📁 Project Structure
@@ -205,38 +257,73 @@ Runtime state is stored under `<repo>/.evo-ai/.data/`.
 evo-ai/
 ├── src/
 │   ├── index.ts              # CLI entry point
-│   ├── master/
-│   │   ├── scheduler.ts      # Master orchestrator
-│   │   └── decision.ts       # Decision-making logic
-│   ├── slave/
-│   │   ├── launcher.ts       # Slave agent launcher
+│   ├── agent/
+│   │   └── pi.ts             # pi-coding-agent SDK integration
+│   ├── agents/
+│   │   ├── child.ts          # Child agent process handling
+│   │   ├── launcher.ts       # Worker agent launcher
 │   │   └── prompts/
 │   │       ├── inspector.md  # Inspector system prompt
 │   │       ├── reviewer.md   # Reviewer system prompt
 │   │       └── worker.md     # Worker system prompt
+│   ├── config/
+│   │   ├── core.ts           # Core configuration handling
+│   │   ├── env.ts            # Environment variable handling
+│   │   ├── errors.ts         # Configuration errors
+│   │   ├── index.ts          # Config module exports
+│   │   ├── models.ts         # Model configuration
+│   │   └── schemas.ts        # Zod validation schemas
+│   ├── manager/
+│   │   ├── decision.ts       # Manager decision-making logic
+│   │   ├── runtime.ts        # Manager runtime control
+│   │   ├── scheduler.ts      # Manager orchestrator
+│   │   └── task-sanitizer.ts # Task input sanitization
+│   ├── runtime/
+│   │   └── paths.ts          # Runtime path utilities
+│   ├── tui/
+│   │   ├── index.tsx         # TUI entry point
+│   │   ├── components/       # TUI React components
+│   │   │   ├── KanbanBoard.tsx    # Visual task board component
+│   │   │   ├── StatusBar.tsx      # System status display
+│   │   │   ├── InputBar.tsx       # Command input interface
+│   │   │   ├── DetailPanel.tsx    # Detail view for tasks/agents
+│   │   │   └── TaskList.tsx       # Filterable task listing
+│   │   └── hooks/            # TUI React hooks
 │   ├── types/
+│   │   ├── events.ts         # Event type definitions (heartbeat, task:status_change, agent:status_change, worktree:change, manager:state, manager:activity)
 │   │   └── index.ts          # TypeScript type definitions
 │   └── utils/
 │       ├── git.ts            # Git operations
-│       └── storage.ts        # State persistence
+│       ├── logger.ts         # Logging utilities
+│       ├── storage.ts        # State persistence
+│       ├── task-text.ts      # Task text utilities
+│       └── time.ts           # Time utilities
 ├── docs/
 │   └── specs/
-│       └── evo-ai.md         # Project specification
+│       ├── evo-ai.md         # Project specification
+│       ├── master-slave-v2-architecture.md  # Architecture design
+│       ├── requirements.md   # Requirements documentation
+│       └── technical-design.md  # Technical design
+├── tests/
+│   ├── e2e/                  # End-to-end tests
+│   └── unit/                 # Unit tests
 ├── .evo-ai/
 │   ├── config.json          # Local static config
 │   ├── credentials.json     # Local secrets, same schema as config.json
-│   └── .data/               # Runtime state
+│   └── .data/               # Runtime state (events, projections)
+├── .github/                  # GitHub workflows
 ├── tsconfig.json            # TypeScript config
+├── biome.json               # Biome linter and formatter config
 └── package.json             # Project metadata
 ```
 
 ## 🔄 Task Lifecycle
 
-1. **Creation**: Master generates a task based on its mission
-2. **Assignment**: Task is assigned to an available slave agent
-3. **Execution**: Slave creates a git worktree and implements the task
-4. **Submission**: Slave submits changes for review
-5. **Review**: Master (or reviewer slave) evaluates the work
+1. **Creation**: Manager generates a task based on its mission
+2. **Assignment**: Task is assigned to an available worker agent
+3. **Execution**: Worker creates a git worktree and implements the task
+4. **Submission**: Worker submits changes for review
+5. **Review**: Manager (or reviewer worker) evaluates the work
 6. **Decision**:
    - ✅ **Approve**: Changes are merged to develop branch
    - 🔄 **Request Changes**: Task is sent back with feedback
@@ -321,6 +408,22 @@ bun run typecheck
 bun run build
 ```
 
+### Running Tests
+
+```bash
+# Run all tests
+bun run test
+
+# Run end-to-end tests
+bun run test:e2e
+
+# Run specific test suites
+bun run test:worktree
+bun run test:slave
+bun run test:review
+bun run test:integration
+```
+
 ### Running in Development Mode
 
 ```bash
@@ -340,21 +443,21 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 ### Example 1: Improving Test Coverage
 
 ```bash
-# Start master with specific mission
+# Start manager with specific mission
 bun run src/index.ts -m "Improve test coverage to 80%"
 
-# Monitor progress
-bun run src/index.ts --tasks
+# Monitor progress with TUI
+bun run src/index.ts --tui
 
 # Check status
 bun run src/index.ts --status
 ```
 
-### Example 2: Bug Fix Marathon
+### Example 2: Bug Fix Session
 
 ```bash
-# Start with higher concurrency
-bun run src/index.ts -c 5 -m "Fix all reported bugs"
+# Start with bug fix mission
+bun run src/index.ts -m "Fix all reported bugs"
 
 # Monitor failed tasks
 bun run src/index.ts --failed
@@ -375,13 +478,13 @@ pm2 start "bun run src/index.ts" --name evo-ai
 
 ## 🔍 Troubleshooting
 
-### Master not responding
+### Manager not responding
 - Check if process is running: `ps aux | grep "bun run"`
 - Check status: `bun run src/index.ts --status`
 - Review logs for errors
 
 ### Tasks stuck in "running" state
-- Check slave agent processes
+- Check worker agent processes
 - Review worktree directories
 - Cancel stuck tasks: `bun run src/index.ts --cancel <task-id>`
 
@@ -393,6 +496,10 @@ pm2 start "bun run src/index.ts" --name evo-ai
 ## 📚 Additional Resources
 
 - [Project Specification](docs/specs/evo-ai.md)
+- [Architecture Design](docs/specs/master-slave-v2-architecture.md)
+- [Requirements](docs/specs/requirements.md)
+- [Technical Design](docs/specs/technical-design.md)
 - [TypeScript Documentation](https://www.typescriptlang.org/docs/)
 - [Bun Documentation](https://bun.sh/docs)
 - [Git Worktree Documentation](https://git-scm.com/docs/git-worktree)
+- [pi-coding-agent SDK](https://github.com/mariozechner/pi-coding-agent) - Underlying agent session management framework
