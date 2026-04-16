@@ -27,9 +27,16 @@ class RateLimiter {
   constructor(
     private maxConcurrent: number,
     private minIntervalMs: number,
+    private maxQueueSize = 50,
   ) {}
 
   async acquire(): Promise<void> {
+    if (this.queue.length >= this.maxQueueSize) {
+      throw new Error(
+        `Rate limit queue full (${this.maxQueueSize} pending requests). Too many concurrent API calls.`,
+      )
+    }
+
     const wait = Math.max(0, this.minIntervalMs - (Date.now() - this.lastFinish))
     if (wait > 0) {
       await new Promise<void>((r) => setTimeout(r, wait))

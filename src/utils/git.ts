@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { loadMasterState, loadMissionHistory } from './storage'
 
@@ -150,13 +150,31 @@ export async function ensureMissionWorkspace(
 
   const worktreeName = `${slug}-${shortStableHash(branchName)}`
   const worktreePath = join(process.cwd(), worktreesDir, worktreeName)
-  const createResult = await runGit(['worktree', 'add', '-b', branchName, worktreePath, baseBranch])
+  const branchAlreadyExists = await branchExists(branchName)
+  const createResult = branchAlreadyExists
+    ? { exitCode: 1 }
+    : await runGit(['worktree', 'add', '-b', branchName, worktreePath, baseBranch])
   if (createResult.exitCode === 0) {
     return { path: worktreePath, branch: branchName }
   }
 
+  if (!branchAlreadyExists) {
+    if (existsSync(worktreePath)) {
+      await runGit(['worktree', 'remove', '--force', worktreePath])
+    }
+
+    if (await branchExists(branchName)) {
+      await deleteBranch(branchName)
+    }
+  }
+
   const retryResult = await runGit(['worktree', 'add', worktreePath, branchName])
-  if (retryResult.exitCode !== 0) return null
+  if (retryResult.exitCode !== 0) {
+    if (existsSync(worktreePath)) {
+      await runGit(['worktree', 'remove', '--force', worktreePath])
+    }
+    return null
+  }
   return { path: worktreePath, branch: branchName }
 }
 
@@ -311,8 +329,22 @@ export async function getUncommittedDiff(cwd?: string): Promise<string> {
 
   const untracked = await getUntrackedFiles(cwd)
   for (const file of untracked) {
+    const filePath = cwd ? join(cwd, file) : file
+    if (!existsSync(filePath)) continue
+
+    try {
+      const sample = readFileSync(filePath)
+      if (sample.subarray(0, 8192).includes(0)) {
+        continue
+      }
+    } catch {
+      continue
+    }
+
     const result = await runGit(['diff', '--no-index', '--', '/dev/null', file], cwd)
-    if (result.stdout) parts.push(result.stdout)
+    if (result.stdout && !result.stdout.includes('Binary files')) {
+      parts.push(result.stdout)
+    }
   }
 
   return parts.filter(Boolean).join('\n')

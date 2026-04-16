@@ -630,19 +630,16 @@ export class Master extends EventEmitter {
   }
 
   private async ensureMissionWorkspaceReady(): Promise<MissionWorkspaceResult> {
-    if (
-      this.state.missionWorktree &&
-      this.state.missionBranch &&
-      existsSync(this.state.missionWorktree)
-    ) {
+    const existingWorktreePath = this.validateMissionWorktree()
+    if (existingWorktreePath && this.state.missionBranch) {
       const validation = await validateMissionWorkspaceBranch(
-        this.state.missionWorktree,
+        existingWorktreePath,
         this.state.missionBranch,
       )
       if (!validation.valid) {
         return {
           status: 'failed',
-          path: this.state.missionWorktree,
+          path: existingWorktreePath,
           branch: this.state.missionBranch,
           message: validation.message,
         }
@@ -650,11 +647,11 @@ export class Master extends EventEmitter {
 
       await updateMissionHistoryEntry(this.state.mission, {
         worktreeBranch: this.state.missionBranch,
-        worktreePath: this.state.missionWorktree,
+        worktreePath: existingWorktreePath,
       })
       return {
         status: 'ready',
-        path: this.state.missionWorktree,
+        path: existingWorktreePath,
         branch: this.state.missionBranch,
         message: 'Mission workspace already ready',
       }
@@ -883,14 +880,15 @@ export class Master extends EventEmitter {
     if (freshTask.status !== 'reviewing') {
       return { status: 'noop', taskId: task.id, message: `Task is ${freshTask.status}` }
     }
-    if (!this.state.missionWorktree) {
-      return { status: 'noop', taskId: task.id, message: 'Mission workspace is missing' }
+    const worktreePath = this.validateMissionWorktree()
+    if (!worktreePath) {
+      return { status: 'noop', taskId: task.id, message: 'Mission workspace is missing or invalid' }
     }
     if (this.activeSlaves > 0) {
       return { status: 'noop', taskId: task.id, message: 'Another slave is already active' }
     }
 
-    const diff = await getUncommittedDiff(this.state.missionWorktree)
+    const diff = await getUncommittedDiff(worktreePath)
     if (!diff.trim()) {
       await this.failTask(task.id, 'No diff to review in mission workspace')
       return { status: 'noop', taskId: task.id, message: 'No diff to review' }
@@ -910,7 +908,7 @@ export class Master extends EventEmitter {
       mission: this.state.mission,
       recentDecisions,
       additionalContext: `## Code Changes to Review\n\`\`\`diff\n${diff}\n\`\`\``,
-      worktreePath: this.state.missionWorktree,
+      worktreePath,
       onLog,
     })
     this.activeSlaveHandles.set(task.id, launcher)
@@ -1033,8 +1031,9 @@ export class Master extends EventEmitter {
     if (!taskId) {
       return { status: 'noop', message: 'No current task to commit' }
     }
-    if (!this.state.missionWorktree) {
-      return { status: 'failed', taskId, message: 'Mission workspace is missing' }
+    const worktreePath = this.validateMissionWorktree()
+    if (!worktreePath) {
+      return { status: 'failed', taskId, message: 'Mission workspace is missing or invalid' }
     }
 
     const task = await this.getTaskById(taskId)
@@ -1072,7 +1071,7 @@ export class Master extends EventEmitter {
     }
 
     const branchValidation = await validateMissionWorkspaceBranch(
-      this.state.missionWorktree,
+      worktreePath,
       this.state.missionBranch,
     )
     if (!branchValidation.valid) {
@@ -1083,7 +1082,7 @@ export class Master extends EventEmitter {
       }
     }
 
-    const hasChanges = await hasUncommittedChanges(this.state.missionWorktree)
+    const hasChanges = await hasUncommittedChanges(worktreePath)
     if (!hasChanges) {
       await this.failTask(taskId, 'No changes to commit for current task')
       return { status: 'failed', taskId, message: 'No changes to commit' }
@@ -1093,7 +1092,7 @@ export class Master extends EventEmitter {
     await saveMasterState(this.state)
     this.emitMasterState()
 
-    const result = await commitAllChanges(this.buildCommitMessage(task), this.state.missionWorktree)
+    const result = await commitAllChanges(this.buildCommitMessage(task), worktreePath)
     if (!result.success) {
       await this.failTask(taskId, result.message)
       return { status: 'failed', taskId, message: result.message }
@@ -1393,10 +1392,20 @@ export class Master extends EventEmitter {
   private async recoverStaleRuntimeState(): Promise<void> {
     const slaves = await loadSlaves()
     const activeTaskIds = new Set<string>()
+    const activeReviewerTaskIds = new Set<string>()
+    let activeBusySlaves = 0
     const recoveredSlaves = slaves.map((slave) => {
       const processAlive = slave.pid ? this.isProcessAlive(slave.pid) : false
       if (slave.status === 'busy' && processAlive && slave.currentTask) {
+        activeBusySlaves += 1
         activeTaskIds.add(slave.currentTask)
+        if (slave.type === 'reviewer') {
+          activeReviewerTaskIds.add(slave.currentTask)
+        }
+        return slave
+      }
+      if (slave.status === 'busy' && processAlive) {
+        activeBusySlaves += 1
         return slave
       }
       if (slave.status !== 'busy') return slave
@@ -1410,6 +1419,7 @@ export class Master extends EventEmitter {
     if (recoveredSlaves.some((slave, index) => slave !== slaves[index])) {
       await saveSlaves(recoveredSlaves)
     }
+    this.activeSlaves = activeBusySlaves
 
     const tasks = await loadTasks()
     let changed = false
@@ -1418,6 +1428,17 @@ export class Master extends EventEmitter {
       if (activeTaskIds.has(task.id)) continue
       changed = true
       await updateTask(task.id, { status: 'pending' })
+    }
+
+    let stateChanged = false
+    if (this.state.currentTaskId && !activeTaskIds.has(this.state.currentTaskId)) {
+      this.state.currentTaskId = undefined
+      stateChanged = true
+    }
+
+    if (!this.state.currentTaskId && this.state.currentStage !== 'idle') {
+      this.state.currentStage = 'idle'
+      stateChanged = true
     }
 
     if (changed) {
@@ -1429,7 +1450,14 @@ export class Master extends EventEmitter {
     }
 
     if (this.state.currentStage === 'committing' && this.state.currentTaskId) {
-      this.state.currentStage = 'reviewing'
+      if (!activeReviewerTaskIds.has(this.state.currentTaskId)) {
+        this.state.currentStage = 'reviewing'
+        stateChanged = true
+      }
+    }
+
+    if (stateChanged) {
+      await saveMasterState(this.state)
     }
   }
 
@@ -1466,5 +1494,18 @@ export class Master extends EventEmitter {
     } catch {
       return false
     }
+  }
+
+  private validateMissionWorktree(): string | null {
+    const worktreePath = this.state.missionWorktree
+    if (!worktreePath) return null
+    if (existsSync(worktreePath)) return worktreePath
+
+    this.logger.warn(`Mission worktree path no longer exists: ${worktreePath}`)
+    this.state.missionWorktree = undefined
+    this.state.missionBranch = undefined
+    void saveMasterState(this.state)
+    this.emitMasterState()
+    return null
   }
 }

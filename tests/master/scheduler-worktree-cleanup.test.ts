@@ -123,4 +123,38 @@ describe('Master mission workspace recovery', () => {
       await removeWorktree(workspace.path).catch(() => {})
     }
   })
+
+  test('恢复孤儿任务时会清理 currentTaskId 并回到 idle', async () => {
+    const workspace = await ensureMissionWorkspace(mission, 'main')
+    if (!workspace) throw new Error('workspace missing')
+
+    const task = createTask({ status: 'running' })
+    await addTask(task)
+    await updateSlave('worker-orphan-test', {
+      id: 'worker-orphan-test',
+      type: 'worker',
+      status: 'busy',
+      currentTask: task.id,
+      startedAt: new Date().toISOString(),
+      pid: 999999,
+    })
+
+    const master = new MasterClass(baseConfig, mission) as any
+    master.state.missionWorktree = workspace.path
+    master.state.missionBranch = workspace.branch
+    master.state.currentTaskId = task.id
+    master.state.currentStage = 'working'
+
+    await master.start()
+    try {
+      const state = await loadMasterState()
+      const tasks = await loadTasks()
+      expect(state.currentTaskId).toBeUndefined()
+      expect(state.currentStage).toBe('idle')
+      expect(tasks.find((item) => item.id === task.id)?.status).toBe('pending')
+    } finally {
+      await master.stop()
+      await removeWorktree(workspace.path).catch(() => {})
+    }
+  })
 })
