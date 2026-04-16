@@ -1,18 +1,18 @@
 import type { EventEmitter } from 'node:events'
 import { useCallback, useEffect, useState } from 'react'
-import type { LogEntry, MasterState, SlaveInfo, Task } from '../../types'
+import type { AgentInfo, LogEntry, ManagerState, Task } from '../../types'
 import type {
   HeartbeatTickEvent,
   LogMessageEvent,
-  MasterActivityEvent,
-  MasterStateEvent,
+  ManagerActivityEvent,
+  ManagerStateEvent,
   TaskStatusChangeEvent,
 } from '../../types/events'
 import { addToGlobalBuffer, getGlobalLogBuffer } from '../../utils/logger'
 import {
   getProjectionEmitter,
-  loadSlaves,
-  loadMasterState as loadState,
+  loadAgents,
+  loadManagerState as loadState,
   loadTasks,
 } from '../../utils/storage'
 import {
@@ -23,8 +23,8 @@ import {
 
 export interface MasterStateData {
   tasks: Task[]
-  slaves: SlaveInfo[]
-  masterState: MasterState | null
+  agents: AgentInfo[]
+  masterState: ManagerState | null
   selectedTaskId: string | null
   lastHeartbeat: string
   phase: string
@@ -42,8 +42,8 @@ export function useMasterState(
   selectTask: (taskId: string | null) => void
 } {
   const [tasks, setTasks] = useState<Task[]>([])
-  const [slaves, setSlaves] = useState<SlaveInfo[]>([])
-  const [masterState, setMasterState] = useState<MasterState | null>(null)
+  const [agents, setSlaves] = useState<AgentInfo[]>([])
+  const [masterState, setMasterState] = useState<ManagerState | null>(null)
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [lastHeartbeat, setLastHeartbeat] = useState('')
   const [phase, setPhase] = useState('initializing')
@@ -57,7 +57,7 @@ export function useMasterState(
     try {
       const [loadedTasks, loadedSlaves, loadedState] = await Promise.all([
         loadTasks(),
-        loadSlaves(),
+        loadAgents(),
         loadState(),
       ])
       setTasks(loadedTasks)
@@ -120,7 +120,7 @@ export function useMasterState(
       pollState()
     }
 
-    const onMasterState = (event: MasterStateEvent) => {
+    const onMasterState = (event: ManagerStateEvent) => {
       setPhase(event.phase)
       setLastHeartbeat(event.lastHeartbeat)
       setMasterState({
@@ -140,6 +140,7 @@ export function useMasterState(
         missionWorktree: event.missionWorktree,
         currentTaskId: event.currentTaskId,
         currentStage: event.currentStage,
+        pendingUserMessages: event.pendingUserMessages,
       })
       refreshHeartbeat(event.phase, event.lastHeartbeat)
     }
@@ -148,7 +149,7 @@ export function useMasterState(
       if (event.taskId) {
         addToGlobalBuffer(event.taskId, {
           timestamp: event.timestamp,
-          slaveId: event.slaveId,
+          agentId: event.agentId,
           taskId: event.taskId,
           source: event.source,
           level: event.level,
@@ -157,28 +158,28 @@ export function useMasterState(
       }
     }
 
-    const onMasterActivity = (event: MasterActivityEvent) => {
+    const onMasterActivity = (event: ManagerActivityEvent) => {
       setMasterActivities((existing) => mergeMasterActivities(existing, event))
     }
 
     emitter.on('heartbeat', onHeartbeat)
     emitter.on('task:status_change', onTaskChange)
-    emitter.on('master:state', onMasterState)
+    emitter.on('manager:state', onMasterState)
     emitter.on('log:message', onLogMessage)
-    emitter.on('master:activity', onMasterActivity)
+    emitter.on('manager:activity', onMasterActivity)
 
     return () => {
       emitter.off('heartbeat', onHeartbeat)
       emitter.off('task:status_change', onTaskChange)
-      emitter.off('master:state', onMasterState)
+      emitter.off('manager:state', onMasterState)
       emitter.off('log:message', onLogMessage)
-      emitter.off('master:activity', onMasterActivity)
+      emitter.off('manager:activity', onMasterActivity)
     }
   }, [emitter, pollState, refreshHeartbeat])
 
   return {
     tasks,
-    slaves,
+    agents,
     masterState,
     selectedTaskId,
     lastHeartbeat,

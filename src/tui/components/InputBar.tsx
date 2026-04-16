@@ -4,7 +4,7 @@ import { useCallback, useState } from 'react'
 interface InputBarProps {
   active: boolean
   value: string
-  onActivate: () => void
+  onActivate: (initialValue?: string) => void
   onCancel: () => void
   onSubmit: (text: string) => void
   onChange: (text: string) => void
@@ -12,11 +12,12 @@ interface InputBarProps {
 
 const COMMANDS = [
   { cmd: '/help', desc: 'Show available commands' },
-  { cmd: '/pause', desc: 'Pause master heartbeat' },
-  { cmd: '/resume', desc: 'Resume master heartbeat' },
+  { cmd: '/pause', desc: 'Pause manager heartbeat' },
+  { cmd: '/resume', desc: 'Resume manager heartbeat' },
+  { cmd: '/task', desc: 'Create a task manually' },
   { cmd: '/cancel', desc: 'Cancel a task by ID' },
   { cmd: '/answer', desc: 'Answer a pending question' },
-  { cmd: '/mission', desc: 'Update master mission' },
+  { cmd: '/mission', desc: 'Update manager mission' },
 ]
 
 function getMatchingCommands(input: string): typeof COMMANDS {
@@ -37,6 +38,10 @@ export function InputBar({
     if (!active) {
       if (input === ':') {
         onActivate()
+        return
+      }
+      if (input && !key.ctrl && !key.meta && !key.escape && !key.return) {
+        onActivate(input)
       }
       return
     }
@@ -69,7 +74,7 @@ export function InputBar({
     return (
       <Box borderStyle="single" borderColor="gray" paddingX={1}>
         <Text color="gray">
-          Press ':' to enter command, 'a' to answer pending question, or 'q' to quit
+          直接输入即可给 manager 发消息，输入 '/' 或 ':' 进入命令，'a' 回答问题，'q' 退出
         </Text>
       </Box>
     )

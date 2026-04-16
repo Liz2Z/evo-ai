@@ -2,20 +2,20 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { decisionEngine } from '../../src/master/decision'
+import { decisionEngine } from '../../src/manager/decision'
 import {
-  buildMasterPrompt,
-  buildMasterSystemPrompt,
+  buildManagerPrompt,
+  buildManagerSystemPrompt,
   type CompleteMissionResult,
-  createMasterRuntime,
-  MasterAgentAdapter,
-  type MasterRuntime,
-  type MasterRuntimeContext,
-  type MasterSnapshot,
-  type MasterTools,
-} from '../../src/master/runtime'
-import { Master } from '../../src/master/scheduler'
-import type { Config, HistoryEntry, MasterState, Question, SlaveInfo, Task } from '../../src/types'
+  createManagerRuntime,
+  ManagerAgentAdapter,
+  type ManagerRuntime,
+  type ManagerRuntimeContext,
+  type ManagerSnapshot,
+  type ManagerTools,
+} from '../../src/manager/runtime'
+import { Manager } from '../../src/manager/scheduler'
+import type { AgentInfo, Config, HistoryEntry, ManagerState, Question, Task } from '../../src/types'
 
 const originalCwd = process.cwd()
 let repoDir: string
@@ -28,11 +28,13 @@ const baseConfig: Config = {
   developBranch: 'main',
   models: {
     lite: 'haiku',
-    pro: 'sonnet',
-    max: 'opus',
+    inspector: 'haiku-inspector',
+    worker: 'sonnet',
+    reviewer: 'sonnet-review',
+    manager: 'opus',
   },
   provider: {},
-  master: {
+  manager: {
     runtimeMode: 'hybrid',
   },
 }
@@ -58,6 +60,16 @@ afterAll(async () => {
   await rm(repoDir, { recursive: true, force: true })
 })
 
+function createDeferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
 function runCmd(cmd: string, args: string[], cwd: string): void {
   const proc = Bun.spawnSync([cmd, ...args], { cwd, stdout: 'pipe', stderr: 'pipe' })
   if (proc.exitCode !== 0) {
@@ -65,7 +77,7 @@ function runCmd(cmd: string, args: string[], cwd: string): void {
   }
 }
 
-function createContext(mode: Config['master']['runtimeMode']): MasterRuntimeContext {
+function createContext(mode: Config['manager']['runtimeMode']): ManagerRuntimeContext {
   const pendingQuestion: Question = {
     id: 'q-1',
     question: 'test?',
@@ -86,7 +98,7 @@ function createContext(mode: Config['master']['runtimeMode']): MasterRuntimeCont
     maxAttempts: 3,
     reviewHistory: [],
   }
-  const state: MasterState = {
+  const state: ManagerState = {
     mission: 'make progress',
     currentPhase: 'idle',
     lastHeartbeat: '',
@@ -98,29 +110,31 @@ function createContext(mode: Config['master']['runtimeMode']): MasterRuntimeCont
     turnStatus: 'idle',
     skippedWakeups: 0,
     currentStage: 'idle',
+    pendingUserMessages: [],
   }
   const history: HistoryEntry[] = []
-  const slaves: SlaveInfo[] = []
+  const agents: AgentInfo[] = []
 
   return {
     triggerReason: 'test',
     timestamp: new Date().toISOString(),
     mission: 'make progress',
-    config: { ...baseConfig, master: { ...baseConfig.master, runtimeMode: mode } },
-    masterState: state,
+    config: { ...baseConfig, manager: { ...baseConfig.manager, runtimeMode: mode } },
+    managerState: state,
     tasks: [pendingTask],
-    slaves,
+    agents,
     recentHistory: history,
+    userMessages: [],
   }
 }
 
-function createNoopTools(): MasterTools {
-  const snapshot: MasterSnapshot = {
+function createNoopTools(): ManagerTools {
+  const snapshot: ManagerSnapshot = {
     mission: 'make progress',
     runtimeMode: 'hybrid',
     currentPhase: 'idle',
     turnStatus: 'idle',
-    activeSlaves: 0,
+    activeAgents: 0,
     maxConcurrency: 1,
     pendingCount: 1,
     pendingQuestions: [],
@@ -128,6 +142,7 @@ function createNoopTools(): MasterTools {
     lastDecisionAt: '',
     skippedWakeups: 0,
     currentStage: 'idle',
+    pendingUserMessages: [],
   }
   const task: Task = {
     id: 'task-1',
@@ -143,9 +158,9 @@ function createNoopTools(): MasterTools {
   }
 
   return {
-    get_master_snapshot: async () => snapshot,
+    get_manager_snapshot: async () => snapshot,
     list_tasks: async () => [task],
-    list_slaves: async () => [],
+    list_agents: async () => [],
     get_task: async () => task,
     get_recent_history: async () => [],
     get_current_task_diff: async () => '',
@@ -182,12 +197,14 @@ function createNoopTools(): MasterTools {
   }
 }
 
-describe('Master runtime driver', () => {
+describe('Manager runtime driver', () => {
   test('运行中的 turn 会跳过新的唤醒请求', async () => {
+    const blocker = createDeferred<void>()
     const runtimeFactory = () =>
       ({
         async init() {},
         async runTurn() {
+          await blocker.promise
           return {
             summary: 'turn',
             toolCalls: [],
@@ -195,48 +212,52 @@ describe('Master runtime driver', () => {
           }
         },
         async dispose() {},
-      }) satisfies MasterRuntime
+      }) satisfies ManagerRuntime
 
-    const master = new Master(baseConfig, 'test mission', { runtimeFactory })
+    const manager = new Manager(baseConfig, 'test mission', { runtimeFactory })
     try {
-      await master.start()
-      ;(master as any).currentTurnPromise = new Promise(() => {})
-      await (master as any).requestTurn('worker_completed')
+      ;(manager as any).isRunning = true
+      const firstTurn = (manager as any).requestTurn('manual_test')
+      await Promise.resolve()
+      const pendingTurn = (manager as any).requestTurn('worker_completed')
+      await Promise.resolve()
 
-      const state = master.getState()
+      const state = manager.getState()
       expect(state.skippedWakeups).toBe(1)
       expect(state.lastSkippedTriggerReason).toBe('worker_completed')
+      blocker.resolve()
+      await Promise.all([firstTurn, pendingTurn])
     } finally {
-      ;(master as any).currentTurnPromise = null
-      await master.stop()
+      blocker.resolve()
+      await manager.stop()
     }
   })
 
-  test('scheduler 会发出 master:activity(turn_completed)', async () => {
+  test('scheduler 会发出 manager:activity(turn_completed)', async () => {
     const runtimeFactory = () =>
       ({
         async init() {},
         async runTurn() {
           return {
             summary: 'Worker assigned to task-1',
-            toolCalls: ['get_master_snapshot', 'assign_worker'],
+            toolCalls: ['get_manager_snapshot', 'assign_worker'],
             unauthorizedToolCalls: [],
           }
         },
         async dispose() {},
-      }) satisfies MasterRuntime
+      }) satisfies ManagerRuntime
 
-    const master = new Master(baseConfig, 'test mission', { runtimeFactory })
+    const manager = new Manager(baseConfig, 'test mission', { runtimeFactory })
     const events: Array<{
       kind: string
       triggerReason: string
       summary: string
       toolCalls: string[]
     }> = []
-    master.on('master:activity', (event) => events.push(event))
+    manager.on('manager:activity', (event) => events.push(event))
 
-    ;(master as any).isRunning = true
-    await (master as any).executeTurn('manual_test')
+    ;(manager as any).isRunning = true
+    await (manager as any).executeTurn('manual_test')
 
     expect(events).toEqual(
       expect.arrayContaining([
@@ -244,17 +265,19 @@ describe('Master runtime driver', () => {
           kind: 'turn_completed',
           triggerReason: 'manual_test',
           summary: 'Worker assigned to task-1',
-          toolCalls: ['get_master_snapshot', 'assign_worker'],
+          toolCalls: ['get_manager_snapshot', 'assign_worker'],
         }),
       ]),
     )
   })
 
-  test('scheduler 会发出 master:activity(turn_skipped)', async () => {
+  test('scheduler 会发出 manager:activity(turn_skipped)', async () => {
+    const blocker = createDeferred<void>()
     const runtimeFactory = () =>
       ({
         async init() {},
         async runTurn() {
+          await blocker.promise
           return {
             summary: 'turn',
             toolCalls: [],
@@ -262,15 +285,17 @@ describe('Master runtime driver', () => {
           }
         },
         async dispose() {},
-      }) satisfies MasterRuntime
+      }) satisfies ManagerRuntime
 
-    const master = new Master(baseConfig, 'test mission', { runtimeFactory })
+    const manager = new Manager(baseConfig, 'test mission', { runtimeFactory })
     const events: Array<{ kind: string; triggerReason: string; summary: string }> = []
-    master.on('master:activity', (event) => events.push(event))
+    manager.on('manager:activity', (event) => events.push(event))
 
-    ;(master as any).isRunning = true
-    ;(master as any).currentTurnPromise = new Promise(() => {})
-    await (master as any).requestTurn('worker_completed')
+    ;(manager as any).isRunning = true
+    const firstTurn = (manager as any).requestTurn('manual_test')
+    await Promise.resolve()
+    const pendingTurn = (manager as any).requestTurn('worker_completed')
+    await Promise.resolve()
 
     expect(events).toEqual(
       expect.arrayContaining([
@@ -282,55 +307,94 @@ describe('Master runtime driver', () => {
       ]),
     )
 
-    ;(master as any).currentTurnPromise = null
+    blocker.resolve()
+    await Promise.all([firstTurn, pendingTurn])
   })
 
-  test('MasterAgentAdapter 只允许 MasterTools 白名单', async () => {
-    const adapter = new MasterAgentAdapter(async () => ({ summary: 'ok' }))
+  test('用户消息在当前 turn 结束后会立刻补跑，不等 heartbeat', async () => {
+    const blocker = createDeferred<void>()
+    const started = createDeferred<void>()
+    const triggers: string[] = []
+    let runCount = 0
+
+    const runtimeFactory = () =>
+      ({
+        async init() {},
+        async runTurn(context) {
+          runCount += 1
+          triggers.push(context.triggerReason)
+          if (runCount === 1) {
+            started.resolve()
+            await blocker.promise
+          }
+          return {
+            summary: `turn:${context.triggerReason}`,
+            toolCalls: [],
+            unauthorizedToolCalls: [],
+          }
+        },
+        async dispose() {},
+      }) satisfies ManagerRuntime
+
+    const manager = new Manager(baseConfig, 'test mission', { runtimeFactory })
+    ;(manager as any).isRunning = true
+
+    const firstTurn = (manager as any).requestTurn('manual_test')
+    await started.promise
+    const userTurn = manager.sendMessageToManager('请立刻响应这条消息')
+
+    blocker.resolve()
+    await Promise.all([firstTurn, userTurn])
+
+    expect(triggers).toEqual(['manual_test', 'user_message'])
+  })
+
+  test('ManagerAgentAdapter 只允许 ManagerTools 白名单', async () => {
+    const adapter = new ManagerAgentAdapter(async () => ({ summary: 'ok' }))
     const tools = createNoopTools()
 
     await expect(adapter.callTool('list_tasks', { status: 'pending' }, tools)).resolves.toEqual([
       expect.objectContaining({ id: 'task-1' }),
     ])
     await expect(adapter.callTool('shell_exec', { cmd: 'pwd' }, tools)).rejects.toThrow(
-      'Unauthorized master tool',
+      'Unauthorized manager tool',
     )
   })
 
-  test('master prompt 明确约束 mission 只能在 worktree 分支提交且禁止提前 merge', () => {
+  test('manager prompt 明确约束 mission 只能在 worktree 分支提交且禁止提前 merge', () => {
     const context = createContext('session_agent')
-    context.masterState.missionBranch = 'mission/test'
-    context.masterState.missionWorktree = '/tmp/mission'
+    context.managerState.missionBranch = 'mission/test'
+    context.managerState.missionWorktree = '/tmp/mission'
 
-    const systemPrompt = buildMasterSystemPrompt()
-    const prompt = buildMasterPrompt(context, [])
+    const systemPrompt = buildManagerSystemPrompt()
+    const prompt = buildManagerPrompt(context, [])
 
     expect(systemPrompt).toContain(
       'All code changes for the mission must stay inside the current mission worktree on the mission branch.',
     )
     expect(systemPrompt).toContain('Do not commit task changes before reviewer approval.')
     expect(systemPrompt).toContain(
-      'Do not merge mission work into main/master/develop during task execution.',
+      'Do not merge mission work into main/manager/develop during task execution.',
     )
     expect(prompt).toContain(
       'All implementation changes must stay on the mission branch inside the mission worktree.',
     )
     expect(prompt).toContain('Only call commit_current_task after reviewer approval')
     expect(prompt).toContain(
-      'Do not merge to main/master/develop while the mission is still running.',
+      'Do not merge to main/manager/develop while the mission is still running.',
     )
   })
 
-  test('三种 runtime 都能在同一套 MasterTools 上运行', async () => {
+  test('三种 runtime 都能在同一套 ManagerTools 上运行', async () => {
     const tools = createNoopTools()
     const agentExecutor = async () => ({
-      summary: 'sdk master turn completed',
+      summary: 'sdk manager turn completed',
       sessionId: '00000000-0000-0000-0000-000000000001',
     })
 
     for (const mode of ['heartbeat_agent', 'session_agent', 'hybrid'] as const) {
       const context = createContext(mode)
-      const runtime = createMasterRuntime(mode, context.config, context.masterState, {
+      const runtime = createManagerRuntime(mode, context.config, context.managerState, {
         agentExecutor,
       })
       await runtime.init(context, tools)
@@ -368,7 +432,7 @@ describe('Master runtime driver', () => {
       return { status: 'started', taskId, message: 'ok' }
     }
 
-    const runtime = createMasterRuntime('hybrid', context.config, context.masterState)
+    const runtime = createManagerRuntime('hybrid', context.config, context.managerState)
     const result = await runtime.runTurn(context, tools)
 
     expect(result.toolCalls).toContain('ask_human')
@@ -403,17 +467,17 @@ describe('Master runtime driver', () => {
         status: 'failed',
       },
     ]
-    context.masterState.missionBranch = 'mission/test'
-    context.masterState.missionWorktree = '/tmp/mission'
+    context.managerState.missionBranch = 'mission/test'
+    context.managerState.missionWorktree = '/tmp/mission'
 
     const toolCalls: string[] = []
     const tools = createNoopTools()
-    tools.get_master_snapshot = async () => ({
+    tools.get_manager_snapshot = async () => ({
       mission: context.mission,
       runtimeMode: 'hybrid',
       currentPhase: 'idle',
       turnStatus: 'idle',
-      activeSlaves: 0,
+      activeAgents: 0,
       maxConcurrency: 1,
       pendingCount: 0,
       pendingQuestions: [],
@@ -423,6 +487,7 @@ describe('Master runtime driver', () => {
       currentStage: 'idle',
       missionBranch: 'mission/test',
       missionWorktree: '/tmp/mission',
+      pendingUserMessages: [],
     })
     tools.complete_mission = async () => {
       toolCalls.push('complete_mission')
@@ -433,7 +498,7 @@ describe('Master runtime driver', () => {
       return { status: 'started', createdTaskIds: [], message: 'unexpected' }
     }
 
-    const runtime = createMasterRuntime('hybrid', context.config, context.masterState)
+    const runtime = createManagerRuntime('hybrid', context.config, context.managerState)
     const result = await runtime.runTurn(context, tools)
 
     expect(result.toolCalls).toContain('complete_mission')

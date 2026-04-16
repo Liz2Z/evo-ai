@@ -1,6 +1,6 @@
 import { Box, Text, useApp, useInput, useStdout } from 'ink'
 import { useCallback, useState } from 'react'
-import type { Master } from '../../master/scheduler'
+import type { Manager } from '../../manager/scheduler'
 import { useLogStream } from '../hooks/useLogStream'
 import { useMasterState } from '../hooks/useMasterState'
 import { DetailPanel } from './DetailPanel'
@@ -11,13 +11,13 @@ import { getStatusBarHeight } from './statusBarModel'
 import { TaskList } from './TaskList'
 
 interface KanbanBoardProps {
-  emitter: Master | null
-  master: Master | null
+  emitter: Manager | null
+  manager: Manager | null
   heartbeatIntervalMs: number
   onQuit: () => void
 }
 
-export function KanbanBoard({ emitter, master, heartbeatIntervalMs, onQuit }: KanbanBoardProps) {
+export function KanbanBoard({ emitter, manager, heartbeatIntervalMs, onQuit }: KanbanBoardProps) {
   const { exit } = useApp()
   const { stdout } = useStdout()
   const [showLogs, setShowLogs] = useState(false)
@@ -27,7 +27,7 @@ export function KanbanBoard({ emitter, master, heartbeatIntervalMs, onQuit }: Ka
 
   const {
     tasks,
-    slaves,
+    agents,
     masterState,
     selectedTaskId,
     phase,
@@ -37,8 +37,8 @@ export function KanbanBoard({ emitter, master, heartbeatIntervalMs, onQuit }: Ka
   } = useMasterState(emitter, heartbeatIntervalMs)
 
   const selectedTask = tasks.find((t) => t.id === selectedTaskId) || null
-  const activeTaskSlaves = getActiveTaskSlaves(selectedTaskId, slaves)
-  const activeSlaveIds = activeTaskSlaves.map((slave) => slave.id)
+  const activeTaskSlaves = getActiveTaskSlaves(selectedTaskId, agents)
+  const activeSlaveIds = activeTaskSlaves.map((agent) => agent.id)
   const logEntries = useLogStream(emitter, selectedTaskId)
   const liveLogEntries = useLogStream(emitter, selectedTaskId, activeSlaveIds)
 
@@ -53,7 +53,7 @@ export function KanbanBoard({ emitter, master, heartbeatIntervalMs, onQuit }: Ka
           const parts = text.slice(8).split(' ')
           const qid = parts[0]
           const answer = parts.slice(1).join(' ')
-          if (master && qid && answer) {
+          if (manager && qid && answer) {
             const { answerQuestion } = await import('../../utils/storage')
             await answerQuestion(qid, answer)
             setLastMessage(`Answered question ${qid}`)
@@ -61,42 +61,50 @@ export function KanbanBoard({ emitter, master, heartbeatIntervalMs, onQuit }: Ka
             setLastMessage('Usage: /answer <questionId> <answer>')
           }
         } else if (text === '/pause') {
-          if (master) {
-            master.pause()
-            setLastMessage('Master paused')
+          if (manager) {
+            manager.pause()
+            setLastMessage('Manager paused')
           }
         } else if (text === '/resume') {
-          if (master) {
-            master.resume()
-            setLastMessage('Master resumed')
+          if (manager) {
+            manager.resume()
+            setLastMessage('Manager resumed')
           }
         } else if (text.startsWith('/cancel ')) {
           const taskId = text.slice(8).trim()
-          if (master && taskId) {
-            await master.cancelTask(taskId)
+          if (manager && taskId) {
+            await manager.cancelTask(taskId)
             setLastMessage(`Cancelled task ${taskId}`)
           }
         } else if (text.startsWith('/mission ')) {
           const mission = text.slice(9).trim()
-          if (master) {
-            await master.setMission(mission)
+          if (manager) {
+            await manager.setMission(mission)
             setLastMessage(`Mission updated: ${mission}`)
+          }
+        } else if (text.startsWith('/task ')) {
+          const description = text.slice(6).trim()
+          if (manager && description) {
+            const task = await manager.addTaskManually(description)
+            setLastMessage(`Task created: ${task.id.slice(-7)} - ${task.description.slice(0, 50)}`)
+          } else {
+            setLastMessage('Usage: /task <description>')
           }
         } else if (text === '/help') {
           setLastMessage(
-            'Commands: /answer /pause /resume /cancel /mission /help | Plain text = new task',
+            'Commands: /answer /pause /resume /task /cancel /mission /help | Plain text = message to manager',
           )
         } else {
-          if (master) {
-            const task = await master.addTaskManually(text)
-            setLastMessage(`Task created: ${task.id.slice(-7)} - ${task.description.slice(0, 50)}`)
+          if (manager) {
+            await manager.sendMessageToManager(text)
+            setLastMessage(`Sent to manager: ${text.slice(0, 60)}`)
           }
         }
       } catch (err) {
         setLastMessage(`Error: ${err}`)
       }
     },
-    [master, cancel],
+    [manager, cancel],
   )
 
   const unansweredQuestions = (masterState?.pendingQuestions || []).filter(
@@ -208,7 +216,7 @@ export function KanbanBoard({ emitter, master, heartbeatIntervalMs, onQuit }: Ka
         >
           <DetailPanel
             task={selectedTask}
-            activeSlaves={activeTaskSlaves}
+            activeAgents={activeTaskSlaves}
             logs={logEntries}
             liveLogs={liveLogEntries}
             showLogs={showLogs}

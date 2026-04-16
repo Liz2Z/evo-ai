@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { Settings } from '../../src/config/core'
 import { configSchema } from '../../src/config/schemas'
 import { getRuntimeDataDir } from '../../src/runtime/paths'
-import { loadMasterState, saveMasterState } from '../../src/utils/storage'
+import { loadManagerState, saveManagerState } from '../../src/utils/storage'
 
 const originalCwd = process.cwd()
 const tempDirs: string[] = []
@@ -43,7 +43,7 @@ describe('配置解析', () => {
           maxConcurrency: 5,
           models: {
             lite: 'global-lite',
-            max: 'global-max',
+            manager: 'global-manager',
           },
           provider: {
             baseUrl: 'https://global.example.com',
@@ -60,7 +60,7 @@ describe('配置解析', () => {
         {
           heartbeatInterval: 1000,
           models: {
-            pro: 'local-pro',
+            worker: 'local-worker',
           },
           provider: {
             apiKey: 'local-key',
@@ -85,8 +85,10 @@ describe('配置解析', () => {
     expect(config.developBranch).toBe('develop')
     expect(config.models).toEqual({
       lite: 'global-lite',
-      pro: 'local-pro',
-      max: 'global-max',
+      inspector: 'glm-4.5-air',
+      worker: 'local-worker',
+      reviewer: 'glm-4.7',
+      manager: 'global-manager',
     })
     expect(config.provider).toEqual({
       apiKey: 'local-key',
@@ -138,7 +140,7 @@ describe('配置解析', () => {
             baseUrl: 'https://local-config.example.com',
           },
           models: {
-            pro: 'local-pro',
+            worker: 'local-worker',
           },
         },
         null,
@@ -170,8 +172,10 @@ describe('配置解析', () => {
 
     expect(config.models).toEqual({
       lite: 'global-lite',
-      pro: 'local-pro',
-      max: 'glm-5.1',
+      inspector: 'glm-4.5-air',
+      worker: 'local-worker',
+      reviewer: 'glm-4.7',
+      manager: 'glm-5.1',
     })
     expect(config.provider).toEqual({
       apiKey: 'local-credentials-key',
@@ -212,7 +216,7 @@ describe('配置解析', () => {
     const repoDir = await makeTempDir('evo-ai-runtime')
     process.chdir(repoDir)
 
-    await saveMasterState({
+    await saveManagerState({
       mission: 'runtime mission',
       currentPhase: 'idle',
       lastHeartbeat: '',
@@ -224,12 +228,13 @@ describe('配置解析', () => {
       turnStatus: 'idle',
       skippedWakeups: 0,
       currentStage: 'idle',
+      pendingUserMessages: [],
     })
 
-    const defaultMasterFile = join(repoDir, '.evo-ai', '.data', 'master.json')
+    const defaultMasterFile = join(repoDir, '.evo-ai', '.data', 'manager.json')
     expect(getRuntimeDataDir().endsWith(join('.evo-ai', '.data'))).toBe(true)
     expect(existsSync(defaultMasterFile)).toBe(true)
-    expect((await loadMasterState()).mission).toBe('runtime mission')
+    expect((await loadManagerState()).mission).toBe('runtime mission')
   })
 
   test('schema 默认值正确', () => {
@@ -240,9 +245,11 @@ describe('配置解析', () => {
     expect(defaults.worktreesDir).toBe('.worktrees')
     expect(defaults.developBranch).toBe('develop')
     expect(defaults.models.lite).toBe('glm-4.5-air')
-    expect(defaults.models.pro).toBe('glm-4.7')
-    expect(defaults.models.max).toBe('glm-5.1')
-    expect(defaults.master.runtimeMode).toBe('heartbeat_agent')
+    expect(defaults.models.inspector).toBe('glm-4.5-air')
+    expect(defaults.models.worker).toBe('glm-4.7')
+    expect(defaults.models.reviewer).toBe('glm-4.7')
+    expect(defaults.models.manager).toBe('glm-5.1')
+    expect(defaults.manager.runtimeMode).toBe('heartbeat_agent')
   })
 
   test('环境变量配置能被加载', async () => {

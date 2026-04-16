@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Master } from '../../src/master/scheduler'
+import { Manager } from '../../src/manager/scheduler'
 import type { Config, ReviewResult, Task } from '../../src/types'
 import {
   commitAllChanges,
@@ -15,7 +15,7 @@ import {
   addMissionHistoryEntry,
   addTask,
   getTask,
-  loadMasterState,
+  loadManagerState,
   loadMissionHistory,
   saveTasks,
 } from '../../src/utils/storage'
@@ -31,17 +31,19 @@ const baseConfig: Config = {
   developBranch: 'main',
   models: {
     lite: 'haiku',
-    pro: 'sonnet',
-    max: 'opus',
+    inspector: 'haiku-inspector',
+    worker: 'sonnet',
+    reviewer: 'sonnet-review',
+    manager: 'opus',
   },
   provider: {},
-  master: {
+  manager: {
     runtimeMode: 'hybrid',
   },
 }
 
 beforeAll(async () => {
-  repoDir = join(tmpdir(), `evo-ai-master-commit-guards-${Date.now()}`)
+  repoDir = join(tmpdir(), `evo-ai-manager-commit-guards-${Date.now()}`)
   await mkdir(repoDir, { recursive: true })
   await mkdir(join(repoDir, '.evo-ai', '.data'), { recursive: true })
   await mkdir(join(repoDir, '.worktrees'), { recursive: true })
@@ -99,7 +101,7 @@ function createTask(taskId: string, overrides: Partial<Task> = {}): Task {
     reviewHistory: [
       {
         attempt: 1,
-        slaveId: 'reviewer',
+        agentId: 'reviewer',
         review: createApprovedReview(taskId),
         timestamp: now,
       },
@@ -108,7 +110,7 @@ function createTask(taskId: string, overrides: Partial<Task> = {}): Task {
   }
 }
 
-describe('Master commit_current_task guards', () => {
+describe('Manager commit_current_task guards', () => {
   test('错误分支上的 mission worktree 禁止提交', async () => {
     const mission = `branch-guard-${Date.now()}`
     const workspace = await ensureMissionWorkspace(mission, 'main')
@@ -120,14 +122,14 @@ describe('Master commit_current_task guards', () => {
     await writeFile(join(workspace.path, 'branch-guard.txt'), 'branch mismatch\n')
     runCmd('git', ['checkout', '-b', `rogue/${Date.now()}`], workspace.path)
 
-    const master = new Master(baseConfig, mission) as any
-    master.state.missionWorktree = workspace.path
-    master.state.missionBranch = workspace.branch
-    master.state.currentTaskId = taskId
-    master.state.currentStage = 'committing'
+    const manager = new Manager(baseConfig, mission) as any
+    manager.state.missionWorktree = workspace.path
+    manager.state.missionBranch = workspace.branch
+    manager.state.currentTaskId = taskId
+    manager.state.currentStage = 'committing'
 
     try {
-      const result = await master.commitCurrentTask()
+      const result = await manager.commitCurrentTask()
       expect(result.status).toBe('failed')
       expect(result.message).toContain('Mission worktree branch mismatch')
 
@@ -148,14 +150,14 @@ describe('Master commit_current_task guards', () => {
     await addTask(task)
     await writeFile(join(workspace.path, 'review-guard.txt'), 'review required\n')
 
-    const master = new Master(baseConfig, mission) as any
-    master.state.missionWorktree = workspace.path
-    master.state.missionBranch = workspace.branch
-    master.state.currentTaskId = taskId
-    master.state.currentStage = 'committing'
+    const manager = new Manager(baseConfig, mission) as any
+    manager.state.missionWorktree = workspace.path
+    manager.state.missionBranch = workspace.branch
+    manager.state.currentTaskId = taskId
+    manager.state.currentStage = 'committing'
 
     try {
-      const result = await master.commitCurrentTask()
+      const result = await manager.commitCurrentTask()
       expect(result.status).toBe('failed')
       expect(result.message).toContain('has not been approved by review')
 
@@ -176,14 +178,14 @@ describe('Master commit_current_task guards', () => {
     await addTask(task)
     await writeFile(join(workspace.path, 'success-guard.txt'), 'ready to commit\n')
 
-    const master = new Master(baseConfig, mission) as any
-    master.state.missionWorktree = workspace.path
-    master.state.missionBranch = workspace.branch
-    master.state.currentTaskId = taskId
-    master.state.currentStage = 'committing'
+    const manager = new Manager(baseConfig, mission) as any
+    manager.state.missionWorktree = workspace.path
+    manager.state.missionBranch = workspace.branch
+    manager.state.currentTaskId = taskId
+    manager.state.currentStage = 'committing'
 
     try {
-      const result = await master.commitCurrentTask()
+      const result = await manager.commitCurrentTask()
       expect(result.status).toBe('committed')
 
       const branch = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], workspace.path)
@@ -221,12 +223,12 @@ describe('Master commit_current_task guards', () => {
     const commit = await commitAllChanges('task(test): mission completion', workspace.path)
     expect(commit.success).toBe(true)
 
-    const master = new Master(baseConfig, mission) as any
-    master.state.missionWorktree = workspace.path
-    master.state.missionBranch = workspace.branch
-    master.state.currentStage = 'idle'
+    const manager = new Manager(baseConfig, mission) as any
+    manager.state.missionWorktree = workspace.path
+    manager.state.missionBranch = workspace.branch
+    manager.state.currentStage = 'idle'
 
-    const result = await master.completeMission()
+    const result = await manager.completeMission()
     expect(result.status).toBe('merged')
     expect(existsSync(workspace.path)).toBe(false)
 
@@ -237,7 +239,7 @@ describe('Master commit_current_task guards', () => {
     const branch = await runGit(['rev-parse', '--verify', workspace.branch], repoDir)
     expect(branch.exitCode).not.toBe(0)
 
-    const state = await loadMasterState()
+    const state = await loadManagerState()
     expect(state.missionWorktree).toBeUndefined()
     expect(state.missionBranch).toBeUndefined()
 

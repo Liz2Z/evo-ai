@@ -51,7 +51,7 @@ Provide your review as JSON:
 
 ## Verdict Guidelines
 
-- **approve**: Code is good, ready for the master to create a task-level commit on the mission branch
+- **approve**: Code is good, ready for the manager to create a task-level commit on the mission branch
 - **request_changes**: Minor issues that should be fixed before merging
 - **reject**: Major problems that require significant rework
 
@@ -62,4 +62,4 @@ Provide your review as JSON:
 - Explain WHY something is a problem
 - Suggest specific solutions when possible
 - Consider the context and constraints of the task
-- Do not treat review approval as permission to merge into main/master/develop
+- Do not treat review approval as permission to merge into main/manager/develop

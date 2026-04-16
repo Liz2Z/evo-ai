@@ -52,7 +52,7 @@ export class DecisionEngine {
         action: 'ask_human',
         reason: 'Mission is not clearly defined',
         data: {
-          question: 'Please provide a clear mission statement for the Master to follow.',
+          question: 'Please provide a clear mission statement for the Manager to follow.',
           options: [],
         },
       }

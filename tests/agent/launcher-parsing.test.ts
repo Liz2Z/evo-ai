@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { SlaveLauncher } from '../../src/slave/launcher'
+import { AgentLauncher } from '../../src/agents/launcher'
 import type { Task } from '../../src/types'
 
 function createTask(id: string): Task {
@@ -17,9 +17,9 @@ function createTask(id: string): Task {
   }
 }
 
-describe('SlaveLauncher parsing', () => {
+describe('AgentLauncher parsing', () => {
   test('inspector 结果被 markdown 代码块包裹时仍能解析为 JSON 摘要', async () => {
-    const launcher = new SlaveLauncher({
+    const launcher = new AgentLauncher({
       type: 'inspector',
       task: createTask('inspection'),
       mission: 'test mission',
@@ -38,7 +38,7 @@ describe('SlaveLauncher parsing', () => {
   })
 
   test('reviewer 输出为 markdown 代码块时仍能提取 verdict', () => {
-    const launcher = new SlaveLauncher({
+    const launcher = new AgentLauncher({
       type: 'reviewer',
       task: createTask('review'),
       mission: 'test mission',

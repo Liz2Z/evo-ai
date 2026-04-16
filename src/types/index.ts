@@ -1,6 +1,13 @@
 export type TaskStatus = 'pending' | 'running' | 'reviewing' | 'completed' | 'failed'
 export type TaskType = 'fix' | 'feature' | 'refactor' | 'test' | 'docs' | 'other'
-export type MasterStage =
+
+export interface ManagerUserMessage {
+  id: string
+  text: string
+  createdAt: string
+}
+
+export type ManagerStage =
   | 'idle'
   | 'inspecting'
   | 'working'
@@ -24,7 +31,7 @@ export interface Task {
 
 export interface ReviewHistory {
   attempt: number
-  slaveId: string
+  agentId: string
   review: ReviewResult
   timestamp: string
 }
@@ -40,13 +47,13 @@ export interface ReviewResult {
   suggestions: string[]
 }
 
-export type SlaveType = 'inspector' | 'worker' | 'reviewer'
-export type SlaveStatus = 'idle' | 'busy' | 'offline'
+export type AgentRole = 'inspector' | 'worker' | 'reviewer'
+export type AgentStatus = 'idle' | 'busy' | 'offline'
 
-export interface SlaveInfo {
+export interface AgentInfo {
   id: string
-  type: SlaveType
-  status: SlaveStatus
+  type: AgentRole
+  status: AgentStatus
   currentTask?: string
   startedAt?: string
   pid?: number
@@ -60,14 +67,14 @@ export interface TaskResult {
   error?: string
 }
 
-export interface MasterState {
+export interface ManagerState {
   mission: string
   currentPhase: string
   lastHeartbeat: string
   lastInspection: string
   activeSince: string
   pendingQuestions: Question[]
-  runtimeMode: MasterRuntimeMode
+  runtimeMode: ManagerRuntimeMode
   lastDecisionAt: string
   turnStatus: 'idle' | 'running' | 'paused'
   runtimeSessionSummary?: string
@@ -76,7 +83,8 @@ export interface MasterState {
   missionBranch?: string
   missionWorktree?: string
   currentTaskId?: string
-  currentStage: MasterStage
+  currentStage: ManagerStage
+  pendingUserMessages: ManagerUserMessage[]
 }
 
 export interface Question {
@@ -93,14 +101,14 @@ export interface HistoryEntry {
   timestamp: string
   type: 'decision' | 'task_created' | 'task_completed' | 'task_failed' | 'review' | 'error'
   taskId?: string
-  slaveId?: string
+  agentId?: string
   summary: string
   details?: Record<string, unknown>
 }
 
 export interface LogEntry {
   timestamp: string
-  slaveId: string
+  agentId: string
   taskId?: string
   source: 'status' | 'agent_text' | 'tool_step'
   level: 'info' | 'error' | 'debug'
@@ -108,8 +116,7 @@ export interface LogEntry {
 }
 
 export type { Config } from '../config/schemas'
-export type ModelTier = 'lite' | 'pro' | 'max'
-export type MasterRuntimeMode = 'heartbeat_agent' | 'session_agent' | 'hybrid'
+export type ManagerRuntimeMode = 'heartbeat_agent' | 'session_agent' | 'hybrid'
 
 export interface PersistedEvent {
   eventId: string
@@ -117,8 +124,8 @@ export interface PersistedEvent {
   type: string
   entityType:
     | 'task'
-    | 'slave'
-    | 'master'
+    | 'agent'
+    | 'manager'
     | 'history'
     | 'question'
     | 'config'

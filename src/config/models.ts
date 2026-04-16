@@ -1,22 +1,24 @@
-import type { Config, ModelTier } from '../types'
+import type { Config } from '../types'
 
-export type ModelPurpose = 'taskTitle' | 'slave' | 'master'
+export type ModelPurpose = 'taskTitle' | 'inspector' | 'worker' | 'reviewer' | 'manager'
 
-const MODEL_TIER_BY_PURPOSE: Record<ModelPurpose, ModelTier> = {
+const MODEL_KEY_BY_PURPOSE: Record<ModelPurpose, keyof Config['models']> = {
   taskTitle: 'lite',
-  slave: 'pro',
-  master: 'max',
+  inspector: 'inspector',
+  worker: 'worker',
+  reviewer: 'reviewer',
+  manager: 'manager',
 }
 
-export function getModelTierForPurpose(purpose: ModelPurpose): ModelTier {
-  return MODEL_TIER_BY_PURPOSE[purpose]
+export function getModelKeyForPurpose(purpose: ModelPurpose): keyof Config['models'] {
+  return MODEL_KEY_BY_PURPOSE[purpose]
 }
 
 export function getConfiguredModel(
   config: Pick<Config, 'models'>,
   purpose: ModelPurpose,
 ): string | undefined {
-  const tier = getModelTierForPurpose(purpose)
-  const model = config.models?.[tier]?.trim()
+  const key = getModelKeyForPurpose(purpose)
+  const model = config.models?.[key]?.trim()
   return model ? model : undefined
 }

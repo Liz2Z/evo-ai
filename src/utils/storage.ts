@@ -3,7 +3,15 @@ import { existsSync } from 'node:fs'
 import { appendFile, mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { getRuntimeDataDir } from '../runtime/paths'
-import type { HistoryEntry, MasterState, PersistedEvent, Question, SlaveInfo, Task } from '../types'
+import type {
+  AgentInfo,
+  HistoryEntry,
+  ManagerState,
+  ManagerUserMessage,
+  PersistedEvent,
+  Question,
+  Task,
+} from '../types'
 
 const projectionEmitter = new EventEmitter()
 
@@ -122,33 +130,33 @@ export async function getTask(taskId: string): Promise<Task | null> {
   return tasks.find((t) => t.id === taskId) || null
 }
 
-// Slave storage
-export async function loadSlaves(): Promise<SlaveInfo[]> {
-  return readJSON('slaves.json', [])
+// Agent storage
+export async function loadAgents(): Promise<AgentInfo[]> {
+  return readJSON('agents.json', [])
 }
 
-export async function saveSlaves(slaves: SlaveInfo[]): Promise<void> {
-  await appendEvent('slaves.replaced', 'slave', { count: slaves.length })
-  await writeJSON('slaves.json', slaves)
-  emitProjectionUpdated('slaves')
+export async function saveAgents(agents: AgentInfo[]): Promise<void> {
+  await appendEvent('agents.replaced', 'agent', { count: agents.length })
+  await writeJSON('agents.json', agents)
+  emitProjectionUpdated('agents')
 }
 
-export async function updateSlave(slaveId: string, updates: Partial<SlaveInfo>): Promise<void> {
-  const slaves = await loadSlaves()
-  const index = slaves.findIndex((s) => s.id === slaveId)
+export async function updateAgent(agentId: string, updates: Partial<AgentInfo>): Promise<void> {
+  const agents = await loadAgents()
+  const index = agents.findIndex((agent) => agent.id === agentId)
   if (index !== -1) {
-    slaves[index] = { ...slaves[index], ...updates }
+    agents[index] = { ...agents[index], ...updates }
   } else {
-    slaves.push({ id: slaveId, ...updates } as SlaveInfo)
+    agents.push({ id: agentId, ...updates } as AgentInfo)
   }
-  await appendEvent('slave.upserted', 'slave', { updates }, slaveId)
-  await writeJSON('slaves.json', slaves)
-  emitProjectionUpdated('slaves', slaveId)
+  await appendEvent('agent.upserted', 'agent', { updates }, agentId)
+  await writeJSON('agents.json', agents)
+  emitProjectionUpdated('agents', agentId)
 }
 
-// Master state
-export async function loadMasterState(): Promise<MasterState> {
-  return readJSON('master.json', {
+// Manager state
+export async function loadManagerState(): Promise<ManagerState> {
+  return readJSON('manager.json', {
     mission: '',
     currentPhase: 'idle',
     lastHeartbeat: '',
@@ -160,13 +168,27 @@ export async function loadMasterState(): Promise<MasterState> {
     turnStatus: 'idle',
     skippedWakeups: 0,
     currentStage: 'idle',
+    pendingUserMessages: [],
   })
 }
 
-export async function saveMasterState(state: MasterState): Promise<void> {
-  await appendEvent('master.updated', 'master', { state }, 'master')
-  await writeJSON('master.json', state)
-  emitProjectionUpdated('master', 'master')
+export async function saveManagerState(state: ManagerState): Promise<void> {
+  await appendEvent('manager.updated', 'manager', { state }, 'manager')
+  await writeJSON('manager.json', state)
+  emitProjectionUpdated('manager', 'manager')
+}
+
+export async function enqueueManagerUserMessage(text: string): Promise<ManagerUserMessage> {
+  const state = await loadManagerState()
+  const message: ManagerUserMessage = {
+    id: generateId('manager-msg'),
+    text,
+    createdAt: new Date().toISOString(),
+  }
+  state.pendingUserMessages = [...(state.pendingUserMessages || []), message]
+  await appendEvent('manager.user_message_queued', 'manager', { message }, 'manager')
+  await saveManagerState(state)
+  return message
 }
 
 // History
@@ -201,25 +223,25 @@ export async function addFailedTask(task: Task): Promise<void> {
 
 // Questions
 export async function loadQuestions(): Promise<Question[]> {
-  const state = await loadMasterState()
+  const state = await loadManagerState()
   return state.pendingQuestions
 }
 
 export async function addQuestion(question: Question): Promise<void> {
-  const state = await loadMasterState()
+  const state = await loadManagerState()
   state.pendingQuestions.push(question)
   await appendEvent('question.added', 'question', { question }, question.id)
-  await saveMasterState(state)
+  await saveManagerState(state)
 }
 
 export async function answerQuestion(questionId: string, answer: string): Promise<void> {
-  const state = await loadMasterState()
+  const state = await loadManagerState()
   const q = state.pendingQuestions.find((q) => q.id === questionId)
   if (q) {
     q.answered = true
     q.answer = answer
     await appendEvent('question.answered', 'question', { answer }, questionId)
-    await saveMasterState(state)
+    await saveManagerState(state)
   }
 }
 

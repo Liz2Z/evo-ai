@@ -1,7 +1,7 @@
 import { Box, Text } from 'ink'
 import type React from 'react'
 import { isValidElement } from 'react'
-import type { LogEntry, MasterState, SlaveInfo, Task } from '../../types'
+import type { AgentInfo, LogEntry, ManagerState, Task } from '../../types'
 import { formatBeijingTime } from '../../utils/time'
 import {
   calculateDetailPanelSections,
@@ -11,12 +11,12 @@ import {
 
 interface DetailPanelProps {
   task: Task | null
-  activeSlaves: SlaveInfo[]
+  activeAgents: AgentInfo[]
   logs: LogEntry[]
   liveLogs: LogEntry[]
   showLogs: boolean
   maxHeight: number
-  masterState?: MasterState | null
+  masterState?: ManagerState | null
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -41,7 +41,7 @@ function renderLogLine(entry: LogEntry, showSlaveId: boolean) {
     <Box>
       <Text wrap="truncate-end">
         <Text color="gray">{formatTime(entry.timestamp)} </Text>
-        {showSlaveId && <Text color="cyan">[{entry.slaveId.slice(-7)}] </Text>}
+        {showSlaveId && <Text color="cyan">[{entry.agentId.slice(-7)}] </Text>}
         <Text color={entry.level === 'error' ? 'red' : entry.level === 'debug' ? 'gray' : 'white'}>
           {entry.message}
         </Text>
@@ -66,8 +66,8 @@ function getNodeKey(node: React.ReactNode, fallback: string): string {
 
 function buildSummaryLines(
   task: Task,
-  activeSlaves: SlaveInfo[],
-  masterState?: MasterState | null,
+  activeAgents: AgentInfo[],
+  masterState?: ManagerState | null,
 ): React.ReactNode[] {
   const lines: React.ReactNode[] = []
 
@@ -142,17 +142,17 @@ function buildSummaryLines(
     )
   }
 
-  if (activeSlaves.length > 0) {
+  if (activeAgents.length > 0) {
     lines.push(
-      <Text key="slaves-label" wrap="truncate-end">
-        Active slave{activeSlaves.length > 1 ? 's' : ''}:
+      <Text key="agents-label" wrap="truncate-end">
+        Active agent{activeAgents.length > 1 ? 's' : ''}:
       </Text>,
     )
-    activeSlaves.forEach((slave, idx) => {
+    activeAgents.forEach((agent, idx) => {
       lines.push(
-        <Text key={`slave-${slave.id}-${idx}`} wrap="truncate-end">
-          {slave.id} ({slave.type}) <Text color="yellow">{slave.status}</Text> since{' '}
-          {formatTime(slave.startedAt || '')}
+        <Text key={`agent-${agent.id}-${idx}`} wrap="truncate-end">
+          {agent.id} ({agent.type}) <Text color="yellow">{agent.status}</Text> since{' '}
+          {formatTime(agent.startedAt || '')}
         </Text>,
       )
     })
@@ -204,7 +204,7 @@ function renderFullLogView(task: Task, logs: LogEntry[], maxHeight: number) {
           <Text color="gray">No logs yet...</Text>
         ) : (
           visibleLogs.map((entry) => (
-            <Box key={`${entry.timestamp}-${entry.slaveId}-${entry.source}`}>
+            <Box key={`${entry.timestamp}-${entry.agentId}-${entry.source}`}>
               {renderLogLine(entry, true)}
             </Box>
           ))
@@ -216,7 +216,7 @@ function renderFullLogView(task: Task, logs: LogEntry[], maxHeight: number) {
 
 export function DetailPanel({
   task,
-  activeSlaves,
+  activeAgents,
   logs,
   liveLogs,
   showLogs,
@@ -235,7 +235,7 @@ export function DetailPanel({
     return renderFullLogView(task, logs, maxHeight)
   }
 
-  const summaryLines = buildSummaryLines(task, activeSlaves, masterState)
+  const summaryLines = buildSummaryLines(task, activeAgents, masterState)
   const showLiveLogs = isActiveTask(task)
 
   if (!showLiveLogs) {
@@ -258,14 +258,14 @@ export function DetailPanel({
   const { summarySectionHeight, summaryBodyHeight, liveLogSectionHeight, liveLogBodyHeight } =
     calculateDetailPanelSections(maxHeight, summaryLines.length)
   const visibleSummary = summaryLines.slice(0, summaryBodyHeight)
-  const showSlaveId = activeSlaves.length !== 1
+  const showSlaveId = activeAgents.length !== 1
   const visibleLiveLogs = prioritizeLiveLogs(liveLogs).slice(-liveLogBodyHeight)
   const liveTitle =
-    activeSlaves.length === 0
-      ? 'LIVE LOGS: waiting for active slave [live]'
-      : activeSlaves.length === 1
-        ? `LIVE LOGS: ${activeSlaves[0].id.slice(-7)} (${activeSlaves[0].type}) [live]`
-        : `LIVE LOGS: ${activeSlaves.length} slaves [live]`
+    activeAgents.length === 0
+      ? 'LIVE LOGS: waiting for active agent [live]'
+      : activeAgents.length === 1
+        ? `LIVE LOGS: ${activeAgents[0].id.slice(-7)} (${activeAgents[0].type}) [live]`
+        : `LIVE LOGS: ${activeAgents.length} agents [live]`
 
   return (
     <Box flexDirection="column" height={maxHeight}>
@@ -286,13 +286,13 @@ export function DetailPanel({
           </Text>
           <Text color="gray"> ({liveLogs.length} lines)</Text>
         </Box>
-        {activeSlaves.length === 0 ? (
-          <Text color="gray">Task is active, but no busy slave is currently attached.</Text>
+        {activeAgents.length === 0 ? (
+          <Text color="gray">Task is active, but no busy agent is currently attached.</Text>
         ) : visibleLiveLogs.length === 0 ? (
-          <Text color="gray">Waiting for slave logs...</Text>
+          <Text color="gray">Waiting for agent logs...</Text>
         ) : (
           visibleLiveLogs.map((entry) => (
-            <Box key={`live-${entry.timestamp}-${entry.slaveId}-${entry.source}`}>
+            <Box key={`live-${entry.timestamp}-${entry.agentId}-${entry.source}`}>
               {renderLogLine(entry, showSlaveId)}
             </Box>
           ))

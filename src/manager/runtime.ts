@@ -1,35 +1,42 @@
 import { Type } from '@mariozechner/pi-ai'
 import { defineTool, type ToolDefinition } from '@mariozechner/pi-coding-agent'
-import { createPiSession, disposePiSession } from '../agent/pi'
+import {
+  abortPiSession,
+  createPiSession,
+  disposePiSession,
+  type PiSessionLifecycle,
+} from '../agent/pi'
 import { getConfiguredModel } from '../config'
 import type {
+  AgentInfo,
   Config,
   HistoryEntry,
-  MasterRuntimeMode,
-  MasterState,
+  ManagerRuntimeMode,
+  ManagerState,
+  ManagerUserMessage,
   Question,
-  SlaveInfo,
   Task,
 } from '../types'
 import { decisionEngine } from './decision'
 
-export interface MasterRuntimeContext {
+export interface ManagerRuntimeContext {
   triggerReason: string
   timestamp: string
   mission: string
   config: Config
-  masterState: MasterState
+  managerState: ManagerState
   tasks: Task[]
-  slaves: SlaveInfo[]
+  agents: AgentInfo[]
   recentHistory: HistoryEntry[]
+  userMessages: ManagerUserMessage[]
 }
 
-export interface MasterSnapshot {
+export interface ManagerSnapshot {
   mission: string
-  runtimeMode: MasterRuntimeMode
+  runtimeMode: ManagerRuntimeMode
   currentPhase: string
-  turnStatus: MasterState['turnStatus']
-  activeSlaves: number
+  turnStatus: ManagerState['turnStatus']
+  activeAgents: number
   maxConcurrency: number
   pendingCount: number
   pendingQuestions: Question[]
@@ -41,10 +48,11 @@ export interface MasterSnapshot {
   missionBranch?: string
   missionWorktree?: string
   currentTaskId?: string
-  currentStage: MasterState['currentStage']
+  currentStage: ManagerState['currentStage']
+  pendingUserMessages: ManagerUserMessage[]
 }
 
-export interface MasterRuntimeTurnResult {
+export interface ManagerRuntimeTurnResult {
   summary: string
   toolCalls: string[]
   unauthorizedToolCalls: string[]
@@ -81,10 +89,10 @@ export interface MissionWorkspaceResult {
   message: string
 }
 
-export interface MasterTools {
-  get_master_snapshot(): Promise<MasterSnapshot>
+export interface ManagerTools {
+  get_manager_snapshot(): Promise<ManagerSnapshot>
   list_tasks(input?: { status?: Task['status'] | Task['status'][] }): Promise<Task[]>
-  list_slaves(): Promise<SlaveInfo[]>
+  list_agents(): Promise<AgentInfo[]>
   get_task(input: { taskId: string }): Promise<Task | null>
   get_recent_history(input?: { limit?: number }): Promise<HistoryEntry[]>
   get_current_task_diff(): Promise<string>
@@ -116,30 +124,32 @@ export interface MasterTools {
   ask_human(input: { question: string; options?: string[] }): Promise<Question>
 }
 
-export interface MasterRuntime {
-  init(context: MasterRuntimeContext, tools: MasterTools): Promise<void>
-  runTurn(context: MasterRuntimeContext, tools: MasterTools): Promise<MasterRuntimeTurnResult>
+export interface ManagerRuntime {
+  init(context: ManagerRuntimeContext, tools: ManagerTools): Promise<void>
+  runTurn(context: ManagerRuntimeContext, tools: ManagerTools): Promise<ManagerRuntimeTurnResult>
   dispose(): Promise<void>
   onExternalEvent?(event: { reason: string; timestamp: string }): Promise<void> | void
+  cancelCurrentTurn?(): Promise<void>
 }
 
-export type ClaudeMasterExecutor = (params: {
-  context: MasterRuntimeContext
-  tools: MasterTools
+export type ClaudeManagerExecutor = (params: {
+  context: ManagerRuntimeContext
+  tools: ManagerTools
   sessionHints: string[]
   sessionId?: string
-  invokeTool: (name: keyof MasterTools, args?: unknown) => Promise<unknown>
-  allowedToolNames: Set<keyof MasterTools>
+  onSessionStart?: (session: PiSessionLifecycle) => void
+  invokeTool: (name: keyof ManagerTools, args?: unknown) => Promise<unknown>
+  allowedToolNames: Set<keyof ManagerTools>
 }) => Promise<{ summary: string; sessionId?: string }>
 
 const TASK_STATUSES = ['pending', 'running', 'reviewing', 'completed', 'failed'] as const
 const TASK_TYPES = ['fix', 'feature', 'refactor', 'test', 'docs', 'other'] as const
 
-export class MasterAgentAdapter {
-  private readonly allowedTools = new Set<keyof MasterTools>([
-    'get_master_snapshot',
+export class ManagerAgentAdapter {
+  private readonly allowedTools = new Set<keyof ManagerTools>([
+    'get_manager_snapshot',
     'list_tasks',
-    'list_slaves',
+    'list_agents',
     'get_task',
     'get_recent_history',
     'get_current_task_diff',
@@ -156,39 +166,40 @@ export class MasterAgentAdapter {
     'ask_human',
   ])
 
-  constructor(private readonly executor: ClaudeMasterExecutor = executeClaudeMasterTurn) {}
+  constructor(private readonly executor: ClaudeManagerExecutor = executeClaudeManagerTurn) {}
 
-  async callTool(name: string, args: unknown, tools: MasterTools): Promise<unknown> {
-    if (!this.allowedTools.has(name as keyof MasterTools)) {
-      throw new Error(`Unauthorized master tool: ${name}`)
+  async callTool(name: string, args: unknown, tools: ManagerTools): Promise<unknown> {
+    if (!this.allowedTools.has(name as keyof ManagerTools)) {
+      throw new Error(`Unauthorized manager tool: ${name}`)
     }
 
-    const toolFn = tools[name as keyof MasterTools] as
+    const toolFn = tools[name as keyof ManagerTools] as
       | ((input?: unknown) => Promise<unknown>)
       | undefined
     if (!toolFn) {
-      throw new Error(`Unknown master tool: ${name}`)
+      throw new Error(`Unknown manager tool: ${name}`)
     }
 
     return toolFn(args)
   }
 
   async run(
-    context: MasterRuntimeContext,
-    tools: MasterTools,
+    context: ManagerRuntimeContext,
+    tools: ManagerTools,
     sessionHints: string[] = [],
     sessionId?: string,
-  ): Promise<MasterRuntimeTurnResult & { sessionId?: string }> {
+    onSessionStart?: (session: PiSessionLifecycle) => void,
+  ): Promise<ManagerRuntimeTurnResult & { sessionId?: string }> {
     const toolCalls: string[] = []
     const unauthorizedToolCalls: string[] = []
 
-    const invokeTool = async (name: keyof MasterTools, args?: unknown): Promise<unknown> => {
+    const invokeTool = async (name: keyof ManagerTools, args?: unknown): Promise<unknown> => {
       try {
         const result = await this.callTool(name, args, tools)
         toolCalls.push(name)
         return result
       } catch (error) {
-        if ((error as Error).message.startsWith('Unauthorized master tool:')) {
+        if ((error as Error).message.startsWith('Unauthorized manager tool:')) {
           unauthorizedToolCalls.push(name)
         }
         throw error
@@ -200,6 +211,7 @@ export class MasterAgentAdapter {
       tools,
       sessionHints,
       sessionId,
+      onSessionStart,
       invokeTool,
       allowedToolNames: this.allowedTools,
     })
@@ -214,23 +226,26 @@ export class MasterAgentAdapter {
   }
 }
 
-class HeartbeatAgentRuntime implements MasterRuntime {
-  private readonly adapter: MasterAgentAdapter
-  private readonly fallbackRuntime: HybridMasterRuntime
+class HeartbeatManagerRuntime implements ManagerRuntime {
+  private readonly adapter: ManagerAgentAdapter
+  private readonly fallbackRuntime: HybridManagerRuntime
+  private activeSession?: PiSessionLifecycle
 
-  constructor(adapter?: MasterAgentAdapter) {
-    this.adapter = adapter || new MasterAgentAdapter()
-    this.fallbackRuntime = new HybridMasterRuntime()
+  constructor(adapter?: ManagerAgentAdapter) {
+    this.adapter = adapter || new ManagerAgentAdapter()
+    this.fallbackRuntime = new HybridManagerRuntime()
   }
 
-  async init(_context: MasterRuntimeContext, _tools: MasterTools): Promise<void> {}
+  async init(_context: ManagerRuntimeContext, _tools: ManagerTools): Promise<void> {}
 
   async runTurn(
-    context: MasterRuntimeContext,
-    tools: MasterTools,
-  ): Promise<MasterRuntimeTurnResult> {
+    context: ManagerRuntimeContext,
+    tools: ManagerTools,
+  ): Promise<ManagerRuntimeTurnResult> {
     try {
-      const result = await this.adapter.run(context, tools)
+      const result = await this.adapter.run(context, tools, [], undefined, (session) => {
+        this.activeSession = session
+      })
       if (result.toolCalls.length > 0) {
         return {
           summary: result.summary,
@@ -257,20 +272,26 @@ class HeartbeatAgentRuntime implements MasterRuntime {
     }
   }
 
+  async cancelCurrentTurn(): Promise<void> {
+    await abortPiSession(this.activeSession)
+    this.activeSession = undefined
+  }
+
   async dispose(): Promise<void> {}
 }
 
-class SessionAgentRuntime implements MasterRuntime {
-  private readonly adapter: MasterAgentAdapter
+class SessionManagerRuntime implements ManagerRuntime {
+  private readonly adapter: ManagerAgentAdapter
   private sessionHints: string[] = []
   private sessionId?: string
+  private activeSession?: PiSessionLifecycle
 
-  constructor(adapter?: MasterAgentAdapter, initialSummary?: string) {
-    this.adapter = adapter || new MasterAgentAdapter()
+  constructor(adapter?: ManagerAgentAdapter, initialSummary?: string) {
+    this.adapter = adapter || new ManagerAgentAdapter()
     if (initialSummary) this.sessionHints.push(initialSummary)
   }
 
-  async init(_context: MasterRuntimeContext, _tools: MasterTools): Promise<void> {}
+  async init(_context: ManagerRuntimeContext, _tools: ManagerTools): Promise<void> {}
 
   async onExternalEvent(event: { reason: string; timestamp: string }): Promise<void> {
     this.sessionHints.push(`${event.timestamp}:${event.reason}`)
@@ -278,10 +299,18 @@ class SessionAgentRuntime implements MasterRuntime {
   }
 
   async runTurn(
-    context: MasterRuntimeContext,
-    tools: MasterTools,
-  ): Promise<MasterRuntimeTurnResult> {
-    const result = await this.adapter.run(context, tools, this.sessionHints, this.sessionId)
+    context: ManagerRuntimeContext,
+    tools: ManagerTools,
+  ): Promise<ManagerRuntimeTurnResult> {
+    const result = await this.adapter.run(
+      context,
+      tools,
+      this.sessionHints,
+      this.sessionId,
+      (session) => {
+        this.activeSession = session
+      },
+    )
     this.sessionId = result.sessionId || this.sessionId
     this.sessionHints.push(result.summary)
     this.sessionHints = this.sessionHints.slice(-20)
@@ -298,20 +327,25 @@ class SessionAgentRuntime implements MasterRuntime {
     this.sessionHints = []
     this.sessionId = undefined
   }
+
+  async cancelCurrentTurn(): Promise<void> {
+    await abortPiSession(this.activeSession)
+    this.activeSession = undefined
+  }
 }
 
-class HybridMasterRuntime implements MasterRuntime {
-  async init(_context: MasterRuntimeContext, _tools: MasterTools): Promise<void> {}
+class HybridManagerRuntime implements ManagerRuntime {
+  async init(_context: ManagerRuntimeContext, _tools: ManagerTools): Promise<void> {}
 
   async runTurn(
-    context: MasterRuntimeContext,
-    tools: MasterTools,
-  ): Promise<MasterRuntimeTurnResult> {
+    context: ManagerRuntimeContext,
+    tools: ManagerTools,
+  ): Promise<ManagerRuntimeTurnResult> {
     const toolCalls: string[] = []
     const unauthorizedToolCalls: string[] = []
 
-    const snapshot = await tools.get_master_snapshot()
-    toolCalls.push('get_master_snapshot')
+    const snapshot = await tools.get_manager_snapshot()
+    toolCalls.push('get_manager_snapshot')
 
     const workspace = await tools.ensure_mission_workspace()
     toolCalls.push('ensure_mission_workspace')
@@ -363,9 +397,9 @@ class HybridMasterRuntime implements MasterRuntime {
         }
       }
 
-      if (snapshot.activeSlaves > 0) {
+      if (snapshot.activeAgents > 0) {
         return {
-          summary: `Waiting for active slave on task ${currentTask.id}`,
+          summary: `Waiting for active agent on task ${currentTask.id}`,
           toolCalls,
           unauthorizedToolCalls,
         }
@@ -397,7 +431,7 @@ class HybridMasterRuntime implements MasterRuntime {
     )
     const hasTaskHistory = context.tasks.length > 0
     const shouldCompleteMission =
-      snapshot.activeSlaves === 0 &&
+      snapshot.activeAgents === 0 &&
       !snapshot.currentTaskId &&
       openTasks.length === 0 &&
       hasTaskHistory &&
@@ -420,7 +454,7 @@ class HybridMasterRuntime implements MasterRuntime {
     const pendingTasks = decisionEngine.prioritizeTasks(
       context.tasks.filter((task) => task.status === 'pending').slice(),
     )
-    if (snapshot.activeSlaves === 0 && pendingTasks.length > 0) {
+    if (snapshot.activeAgents === 0 && pendingTasks.length > 0) {
       await tools.assign_worker({ taskId: pendingTasks[0].id })
       toolCalls.push('assign_worker')
       return {
@@ -431,7 +465,7 @@ class HybridMasterRuntime implements MasterRuntime {
     }
 
     const shouldInspect =
-      snapshot.activeSlaves === 0 &&
+      snapshot.activeAgents === 0 &&
       !snapshot.currentTaskId &&
       context.tasks.length === 0 &&
       context.tasks.filter((task) => ['pending', 'running', 'reviewing'].includes(task.status))
@@ -463,33 +497,37 @@ class HybridMasterRuntime implements MasterRuntime {
   async dispose(): Promise<void> {}
 }
 
-export function createMasterRuntime(
-  mode: MasterRuntimeMode,
+export function createManagerRuntime(
+  mode: ManagerRuntimeMode,
   _config: Config,
-  state: MasterState,
-  options?: { agentExecutor?: ClaudeMasterExecutor },
-): MasterRuntime {
-  const adapter = options?.agentExecutor ? new MasterAgentAdapter(options.agentExecutor) : undefined
+  state: ManagerState,
+  options?: { agentExecutor?: ClaudeManagerExecutor },
+): ManagerRuntime {
+  const adapter = options?.agentExecutor
+    ? new ManagerAgentAdapter(options.agentExecutor)
+    : undefined
 
-  if (mode === 'heartbeat_agent') return new HeartbeatAgentRuntime(adapter)
-  if (mode === 'session_agent') return new SessionAgentRuntime(adapter, state.runtimeSessionSummary)
-  return new HybridMasterRuntime()
+  if (mode === 'heartbeat_agent') return new HeartbeatManagerRuntime(adapter)
+  if (mode === 'session_agent')
+    return new SessionManagerRuntime(adapter, state.runtimeSessionSummary)
+  return new HybridManagerRuntime()
 }
 
-async function executeClaudeMasterTurn(params: {
-  context: MasterRuntimeContext
-  tools: MasterTools
+async function executeClaudeManagerTurn(params: {
+  context: ManagerRuntimeContext
+  tools: ManagerTools
   sessionHints: string[]
   sessionId?: string
-  invokeTool: (name: keyof MasterTools, args?: unknown) => Promise<unknown>
-  allowedToolNames: Set<keyof MasterTools>
+  onSessionStart?: (session: PiSessionLifecycle) => void
+  invokeTool: (name: keyof ManagerTools, args?: unknown) => Promise<unknown>
+  allowedToolNames: Set<keyof ManagerTools>
 }): Promise<{ summary: string; sessionId?: string }> {
-  const { context, sessionHints, invokeTool, allowedToolNames, sessionId } = params
-  const model = getConfiguredModel(context.config, 'master') || context.config.models.max
-  const prompt = [buildMasterSystemPrompt(), buildMasterPrompt(context, sessionHints)]
+  const { context, sessionHints, invokeTool, allowedToolNames, sessionId, onSessionStart } = params
+  const model = getConfiguredModel(context.config, 'manager') || context.config.models.manager
+  const prompt = [buildManagerSystemPrompt(), buildManagerPrompt(context, sessionHints)]
     .filter(Boolean)
     .join('\n\n')
-  const customTools = buildMasterPiTools(invokeTool, allowedToolNames)
+  const customTools = buildManagerPiTools(invokeTool, allowedToolNames)
 
   const { session } = await createPiSession({
     cwd: process.cwd(),
@@ -498,6 +536,7 @@ async function executeClaudeMasterTurn(params: {
     tools: [],
     customTools,
   })
+  onSessionStart?.(session)
 
   try {
     await session.prompt(prompt)
@@ -507,11 +546,11 @@ async function executeClaudeMasterTurn(params: {
     ) as Array<{ stopReason?: string; errorMessage?: string }>
     const lastAssistant = assistantMessages[assistantMessages.length - 1]
     if (lastAssistant?.stopReason === 'error') {
-      throw new Error(lastAssistant.errorMessage || 'Master agent returned error')
+      throw new Error(lastAssistant.errorMessage || 'Manager agent returned error')
     }
 
     return {
-      summary: resultText || 'Pi master turn completed',
+      summary: resultText || 'Pi manager turn completed',
       sessionId,
     }
   } finally {
@@ -519,16 +558,16 @@ async function executeClaudeMasterTurn(params: {
   }
 }
 
-function buildMasterPiTools(
-  invokeTool: (name: keyof MasterTools, args?: unknown) => Promise<unknown>,
-  allowedToolNames: Set<keyof MasterTools>,
+function buildManagerPiTools(
+  invokeTool: (name: keyof ManagerTools, args?: unknown) => Promise<unknown>,
+  allowedToolNames: Set<keyof ManagerTools>,
 ) {
   const statusSchema = Type.Union(TASK_STATUSES.map((status) => Type.Literal(status)))
   const taskTypeSchema = Type.Union(TASK_TYPES.map((type) => Type.Literal(type)))
   const toolDefs: ToolDefinition[] = []
 
   const pushTool = (
-    name: keyof MasterTools,
+    name: keyof ManagerTools,
     description: string,
     parameters: ReturnType<typeof Type.Object>,
   ) => {
@@ -544,7 +583,7 @@ function buildMasterPiTools(
     )
   }
 
-  pushTool('get_master_snapshot', 'Get current master runtime snapshot.', Type.Object({}))
+  pushTool('get_manager_snapshot', 'Get current manager runtime snapshot.', Type.Object({}))
   pushTool(
     'list_tasks',
     'List tasks, optionally filtering by status or statuses.',
@@ -552,7 +591,7 @@ function buildMasterPiTools(
       status: Type.Optional(Type.Union([statusSchema, Type.Array(statusSchema)])),
     }),
   )
-  pushTool('list_slaves', 'List all slaves and their states.', Type.Object({}))
+  pushTool('list_agents', 'List all agents and their states.', Type.Object({}))
   pushTool('get_task', 'Get a single task by id.', Type.Object({ taskId: Type.String() }))
   pushTool(
     'get_recent_history',
@@ -649,31 +688,35 @@ function asPiToolResult(value: unknown) {
   }
 }
 
-export function buildMasterSystemPrompt(): string {
+export function buildManagerSystemPrompt(): string {
   return [
     'You are the mission orchestration agent for this repository.',
-    'Use only the provided MasterTools tools.',
+    'Use only the provided ManagerTools tools.',
     'All newly created task descriptions must be written in Simplified Chinese.',
     'Mission mode constraints:',
     '1. Single mission only.',
     '2. Exactly one mission worktree/branch.',
-    '3. Exactly one active slave at a time.',
+    '3. Exactly one active agent at a time.',
     '4. The current task must finish review and commit before the next task starts.',
     '5. All code changes for the mission must stay inside the current mission worktree on the mission branch.',
     '6. Do not commit task changes before reviewer approval.',
-    '7. Review approval only unlocks a task-level commit on the mission branch. Do not merge mission work into main/master/develop during task execution.',
+    '7. Review approval only unlocks a task-level commit on the mission branch. Do not merge mission work into main/manager/develop during task execution.',
     '8. Merge is only a mission-completion action and must never happen as part of an in-flight task cycle.',
     '9. Once there are no pending/running/reviewing tasks left, complete the mission instead of launching a new inspector pass.',
+    '10. If there are new human messages, address them directly in your summary and take tool actions only when appropriate.',
     'Be concise and tool-driven.',
   ].join('\n')
 }
 
-export function buildMasterPrompt(context: MasterRuntimeContext, sessionHints: string[]): string {
+export function buildManagerPrompt(context: ManagerRuntimeContext, sessionHints: string[]): string {
   const pendingQuestions =
-    context.masterState.pendingQuestions
+    context.managerState.pendingQuestions
       .filter((question) => !question.answered)
       .map((question) => `- [${question.id}] ${question.question}`)
       .join('\n') || 'none'
+
+  const userMessages =
+    context.userMessages.map((message) => `- [${message.id}] ${message.text}`).join('\n') || 'none'
 
   const tasksByStatus = groupTaskCounts(context.tasks)
   const taskSummary =
@@ -697,20 +740,22 @@ export function buildMasterPrompt(context: MasterRuntimeContext, sessionHints: s
 
   return [
     `Mission: ${context.mission}`,
-    `Current stage: ${context.masterState.currentStage}`,
-    `Current task: ${context.masterState.currentTaskId || 'none'}`,
-    `Mission branch: ${context.masterState.missionBranch || 'unset'}`,
-    `Mission worktree: ${context.masterState.missionWorktree || 'unset'}`,
+    `Current stage: ${context.managerState.currentStage}`,
+    `Current task: ${context.managerState.currentTaskId || 'none'}`,
+    `Mission branch: ${context.managerState.missionBranch || 'unset'}`,
+    `Mission worktree: ${context.managerState.missionWorktree || 'unset'}`,
     'Execution policy:',
     '- All implementation changes must stay on the mission branch inside the mission worktree.',
     '- Only call commit_current_task after reviewer approval and only for the current reviewed task.',
     '- If no pending/running/reviewing tasks remain, call complete_mission instead of launching inspector.',
-    '- Do not merge to main/master/develop while the mission is still running.',
+    '- Do not merge to main/manager/develop while the mission is still running.',
     '- Any newly created task description must be in Simplified Chinese.',
     'Task summary:',
     taskSummary,
     'Pending human questions:',
     pendingQuestions,
+    'New human messages:',
+    userMessages,
     'Recent history:',
     recentHistory,
     'Session hints:',
@@ -726,14 +771,14 @@ function groupTaskCounts(tasks: Task[]): Record<string, number> {
 }
 
 function buildSessionSummary(
-  context: MasterRuntimeContext,
+  context: ManagerRuntimeContext,
   toolCalls: string[],
   sessionHints: string[],
 ): string {
   return [
     `mission=${context.mission}`,
-    `stage=${context.masterState.currentStage}`,
-    `currentTask=${context.masterState.currentTaskId || 'none'}`,
+    `stage=${context.managerState.currentStage}`,
+    `currentTask=${context.managerState.currentTaskId || 'none'}`,
     `toolCalls=${toolCalls.join(',') || 'none'}`,
     `hints=${sessionHints.slice(-5).join(' | ') || 'none'}`,
   ].join('\n')

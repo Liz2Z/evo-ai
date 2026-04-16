@@ -1,10 +1,11 @@
 import type {
-  MasterRuntimeMode,
-  MasterStage,
-  MasterState,
+  AgentRole,
+  AgentStatus,
+  ManagerRuntimeMode,
+  ManagerStage,
+  ManagerState,
+  ManagerUserMessage,
   Question,
-  SlaveStatus,
-  SlaveType,
   Task,
   TaskStatus,
 } from './index'
@@ -12,17 +13,17 @@ import type {
 export type EvoEventType =
   | 'heartbeat'
   | 'task:status_change'
-  | 'slave:status_change'
+  | 'agent:status_change'
   | 'log:message'
   | 'worktree:change'
-  | 'master:state'
-  | 'master:activity'
+  | 'manager:state'
+  | 'manager:activity'
   | 'projection:updated'
 
 export interface HeartbeatTickEvent {
   timestamp: string
   phase: string
-  activeSlaves: number
+  activeAgents: number
   pendingCount: number
 }
 
@@ -33,16 +34,16 @@ export interface TaskStatusChangeEvent {
   task: Task
 }
 
-export interface SlaveStatusChangeEvent {
-  slaveId: string
-  type: SlaveType
-  fromStatus: SlaveStatus
-  toStatus: SlaveStatus
+export interface AgentStatusChangeEvent {
+  agentId: string
+  role: AgentRole
+  fromStatus: AgentStatus
+  toStatus: AgentStatus
   currentTask?: string
 }
 
 export interface LogMessageEvent {
-  slaveId: string
+  agentId: string
   taskId?: string
   source: 'status' | 'agent_text' | 'tool_step'
   level: 'info' | 'error' | 'debug'
@@ -57,15 +58,15 @@ export interface WorktreeChangeEvent {
   branch?: string
 }
 
-export interface MasterStateEvent {
+export interface ManagerStateEvent {
   phase: string
   mission: string
   lastHeartbeat: string
   lastInspection: string
   activeSince: string
   pendingQuestions: Question[]
-  runtimeMode: MasterRuntimeMode
-  turnStatus: MasterState['turnStatus']
+  runtimeMode: ManagerRuntimeMode
+  turnStatus: ManagerState['turnStatus']
   lastDecisionAt: string
   runtimeSessionSummary?: string
   skippedWakeups: number
@@ -73,15 +74,16 @@ export interface MasterStateEvent {
   missionBranch?: string
   missionWorktree?: string
   currentTaskId?: string
-  currentStage: MasterStage
+  currentStage: ManagerStage
+  pendingUserMessages: ManagerUserMessage[]
 }
 
-export interface MasterActivityEvent {
+export interface ManagerActivityEvent {
   timestamp: string
   triggerReason: string
   summary: string
   toolCalls: string[]
-  kind: 'turn_started' | 'turn_completed' | 'turn_failed' | 'turn_skipped'
+  kind: 'turn_started' | 'turn_completed' | 'turn_failed' | 'turn_skipped' | 'turn_interrupted'
 }
 
 export interface ProjectionUpdatedEvent {
@@ -93,9 +95,9 @@ export interface ProjectionUpdatedEvent {
 export type EvoEvent =
   | HeartbeatTickEvent
   | TaskStatusChangeEvent
-  | SlaveStatusChangeEvent
+  | AgentStatusChangeEvent
   | LogMessageEvent
   | WorktreeChangeEvent
-  | MasterStateEvent
-  | MasterActivityEvent
+  | ManagerStateEvent
+  | ManagerActivityEvent
   | ProjectionUpdatedEvent

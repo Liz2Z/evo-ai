@@ -1,8 +1,9 @@
 // Auto-generated
-import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { readFileSync as actualReadFileSync } from 'node:fs'
 import type { AgentSessionEvent } from '@mariozechner/pi-coding-agent'
 import type { PiSessionLifecycle } from '../../src/agent/pi'
-import { runInspector, runReviewer, runWorker, SlaveLauncher } from '../../src/slave/launcher'
+import { AgentLauncher, runInspector, runReviewer, runWorker } from '../../src/agents/launcher'
 import type { ReviewResult, Task, TaskResult } from '../../src/types'
 import type { LogMessageEvent } from '../../src/types/events'
 
@@ -16,6 +17,10 @@ const sessionLifecycleState = {
 beforeEach(() => {
   sessionLifecycleState.disposeCount = 0
   sessionLifecycleState.abortCount = 0
+})
+
+afterAll(() => {
+  mock.restore()
 })
 
 // Mock dependencies
@@ -120,34 +125,8 @@ mock.module('../../src/agent/pi', () => ({
   },
 }))
 
-mock.module('../../src/utils/git', () => ({
-  createWorktree: async (
-    task: { id: string },
-    baseBranch: string,
-    _title?: string,
-    _worktreesDir?: string,
-  ) => {
-    if (baseBranch === 'invalid-branch') {
-      return null
-    }
-    return {
-      path: `/tmp/worktrees/${task.id}`,
-      branch: `task/${task.id.slice(-7)}`,
-    }
-  },
-  removeWorktree: async (_path: string) => {
-    // Mock implementation
-  },
-  getDiff: async (_branch: string, _baseBranch: string, _worktreePath: string) => {
-    return 'mock diff content'
-  },
-  getChangedFiles: async (_branch: string, _baseBranch: string, _worktreePath: string) => {
-    return ['src/test.ts', 'src/test2.ts']
-  },
-}))
-
 mock.module('../../src/utils/storage', () => ({
-  updateSlave: async (_slaveId: string, _update: Record<string, unknown>) => {
+  updateAgent: async (_slaveId: string, _update: Record<string, unknown>) => {
     // Mock implementation
   },
   addHistoryEntry: async (_entry: Record<string, unknown>) => {
@@ -156,15 +135,17 @@ mock.module('../../src/utils/storage', () => ({
 }))
 
 mock.module('node:fs', () => ({
-  readFileSync: (path: string, _encoding: string) => {
+  readFileSync: (path: string, encoding?: BufferEncoding) => {
     if (path.includes('inspector.md')) {
       return '# Inspector Prompt\nYou are an inspector.'
-    } else if (path.includes('worker.md')) {
+    }
+    if (path.includes('worker.md')) {
       return '# Worker Prompt\nYou are a worker.'
-    } else if (path.includes('reviewer.md')) {
+    }
+    if (path.includes('reviewer.md')) {
       return '# Reviewer Prompt\nYou are a reviewer.'
     }
-    return '# Default Prompt'
+    return actualReadFileSync(path, encoding as any)
   },
 }))
 
@@ -173,24 +154,28 @@ mock.module('../../src/config', () => ({
     get: () => ({
       models: {
         lite: 'haiku',
-        pro: 'sonnet',
-        max: 'opus',
+        inspector: 'haiku-inspector',
+        worker: 'sonnet',
+        reviewer: 'sonnet-review',
+        manager: 'opus',
       },
       worktreesDir: '/tmp/worktrees',
     }),
   },
   getConfiguredModel: (config: { models: Record<string, string> }, purpose: string) => {
-    const tierMap: Record<string, string> = {
+    const keyMap: Record<string, string> = {
       taskTitle: 'lite',
-      slave: 'pro',
-      master: 'max',
+      inspector: 'inspector',
+      worker: 'worker',
+      reviewer: 'reviewer',
+      manager: 'manager',
     }
-    const tier = tierMap[purpose] || 'pro'
-    return config.models[tier]
+    const key = keyMap[purpose] || 'worker'
+    return config.models[key]
   },
 }))
 
-describe('SlaveLauncher - Rate Limiting', () => {
+describe('AgentLauncher - Rate Limiting', () => {
   test('should enforce minimum interval between API calls', async () => {
     const task: Task = {
       id: 'test-task-1',
@@ -205,7 +190,7 @@ describe('SlaveLauncher - Rate Limiting', () => {
       reviewHistory: [],
     }
 
-    const launcher = new SlaveLauncher({
+    const launcher = new AgentLauncher({
       type: 'worker',
       task,
       mission: 'Test mission',
@@ -240,7 +225,7 @@ describe('SlaveLauncher - Rate Limiting', () => {
 
     const launchers = tasks.map(
       (task) =>
-        new SlaveLauncher({
+        new AgentLauncher({
           type: 'worker',
           task,
           mission: 'Test concurrent execution',
@@ -260,7 +245,7 @@ describe('SlaveLauncher - Rate Limiting', () => {
   })
 })
 
-describe('SlaveLauncher - Worktree Title Generation', () => {
+describe('AgentLauncher - Worktree Title Generation', () => {
   test('should generate semantic title from task description', async () => {
     const task: Task = {
       id: 'test-task-title',
@@ -276,7 +261,7 @@ describe('SlaveLauncher - Worktree Title Generation', () => {
       reviewHistory: [],
     }
 
-    const launcher = new SlaveLauncher({
+    const launcher = new AgentLauncher({
       type: 'worker',
       task,
       mission: 'Test title generation',
@@ -306,7 +291,7 @@ describe('SlaveLauncher - Worktree Title Generation', () => {
       reviewHistory: [],
     }
 
-    const launcher = new SlaveLauncher({
+    const launcher = new AgentLauncher({
       type: 'worker',
       task,
       mission: 'Test fallback title',
@@ -336,7 +321,7 @@ describe('SlaveLauncher - Worktree Title Generation', () => {
       reviewHistory: [],
     }
 
-    const launcher = new SlaveLauncher({
+    const launcher = new AgentLauncher({
       type: 'worker',
       task,
       mission: 'Test title sanitization',
@@ -352,7 +337,7 @@ describe('SlaveLauncher - Worktree Title Generation', () => {
   })
 })
 
-describe('SlaveLauncher - Error Handling', () => {
+describe('AgentLauncher - Error Handling', () => {
   test('should execute worker without explicit mission workspace path', async () => {
     const task: Task = {
       id: 'test-task-worktree-fail',
@@ -367,7 +352,7 @@ describe('SlaveLauncher - Error Handling', () => {
       reviewHistory: [],
     }
 
-    const launcher = new SlaveLauncher({
+    const launcher = new AgentLauncher({
       type: 'worker',
       task,
       mission: 'Test mission workspace fallback',
@@ -398,7 +383,7 @@ describe('SlaveLauncher - Error Handling', () => {
     // Mock the session to return malformed JSON
     // This would need more sophisticated mocking to test properly
     // For now, we verify the launcher can be created
-    const launcher = new SlaveLauncher({
+    const launcher = new AgentLauncher({
       type: 'worker',
       task,
       mission: 'Test malformed JSON',
@@ -423,7 +408,7 @@ describe('SlaveLauncher - Error Handling', () => {
       reviewHistory: [],
     }
 
-    const launcher = new SlaveLauncher({
+    const launcher = new AgentLauncher({
       type: 'reviewer',
       task,
       mission: 'Test reviewer',
@@ -454,7 +439,7 @@ describe('SlaveLauncher - Error Handling', () => {
     }
 
     let _errorHandled = false
-    const launcher = new SlaveLauncher({
+    const launcher = new AgentLauncher({
       type: 'worker',
       task,
       mission: 'Test error handling',
@@ -474,13 +459,13 @@ describe('SlaveLauncher - Error Handling', () => {
     expect(result === null || result !== null).toBe(true)
   })
 
-  test('should cancel slave and cleanup worktree', async () => {
+  test('should cancel agent and cleanup worktree', async () => {
     const task: Task = {
       id: 'test-task-cancel',
       type: 'feature',
       status: 'pending',
       priority: 5,
-      description: 'Test slave cancellation',
+      description: 'Test agent cancellation',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       attemptCount: 0,
@@ -488,7 +473,7 @@ describe('SlaveLauncher - Error Handling', () => {
       reviewHistory: [],
     }
 
-    const launcher = new SlaveLauncher({
+    const launcher = new AgentLauncher({
       type: 'worker',
       task,
       mission: 'Test cancellation',
@@ -501,14 +486,14 @@ describe('SlaveLauncher - Error Handling', () => {
     // Cancel should complete without error
     await launcher.cancel()
 
-    // Verify slave is in a clean state
+    // Verify agent is in a clean state
     expect(launcher).toBeDefined()
     expect(sessionLifecycleState.abortCount).toBe(0)
     expect(sessionLifecycleState.disposeCount).toBe(0)
   })
 })
 
-describe('SlaveLauncher - Session Cleanup', () => {
+describe('AgentLauncher - Session Cleanup', () => {
   test('should dispose session after execute completes', async () => {
     const task: Task = {
       id: 'test-task-session-dispose',
@@ -523,7 +508,7 @@ describe('SlaveLauncher - Session Cleanup', () => {
       reviewHistory: [],
     }
 
-    const launcher = new SlaveLauncher({
+    const launcher = new AgentLauncher({
       type: 'worker',
       task,
       mission: 'Test session cleanup',
@@ -538,7 +523,7 @@ describe('SlaveLauncher - Session Cleanup', () => {
   })
 })
 
-describe('SlaveLauncher - Context Building', () => {
+describe('AgentLauncher - Context Building', () => {
   test('should build context prompt with all components', async () => {
     const task: Task = {
       id: 'test-task-context',
@@ -554,7 +539,7 @@ describe('SlaveLauncher - Context Building', () => {
       reviewHistory: [],
     }
 
-    const launcher = new SlaveLauncher({
+    const launcher = new AgentLauncher({
       type: 'worker',
       task,
       mission: 'Main mission statement',
@@ -570,7 +555,7 @@ describe('SlaveLauncher - Context Building', () => {
     expect(result.taskId).toBe(task.id)
   })
 
-  test('should build task prompt based on slave type', async () => {
+  test('should build task prompt based on agent type', async () => {
     const inspectorTask: Task = {
       id: 'inspector-task',
       type: 'other',
@@ -584,7 +569,7 @@ describe('SlaveLauncher - Context Building', () => {
       reviewHistory: [],
     }
 
-    const inspector = new SlaveLauncher({
+    const inspector = new AgentLauncher({
       type: 'inspector',
       task: inspectorTask,
       mission: 'Inspection mission',
@@ -598,7 +583,7 @@ describe('SlaveLauncher - Context Building', () => {
   })
 })
 
-describe('SlaveLauncher - Result Parsing', () => {
+describe('AgentLauncher - Result Parsing', () => {
   test('should parse worker task result with JSON', async () => {
     const task: Task = {
       id: 'test-parse-worker-json',
@@ -613,7 +598,7 @@ describe('SlaveLauncher - Result Parsing', () => {
       reviewHistory: [],
     }
 
-    const launcher = new SlaveLauncher({
+    const launcher = new AgentLauncher({
       type: 'worker',
       task,
       mission: 'Test parsing',
@@ -644,7 +629,7 @@ describe('SlaveLauncher - Result Parsing', () => {
       reviewHistory: [],
     }
 
-    const launcher = new SlaveLauncher({
+    const launcher = new AgentLauncher({
       type: 'reviewer',
       task,
       mission: 'Test reviewer parsing',
@@ -726,7 +711,7 @@ describe('Convenience Functions', () => {
   })
 })
 
-describe('SlaveLauncher - Logging', () => {
+describe('AgentLauncher - Logging', () => {
   test('should emit log events through onLog callback', async () => {
     const task: Task = {
       id: 'test-task-logging',
@@ -743,7 +728,7 @@ describe('SlaveLauncher - Logging', () => {
 
     const logEvents: Array<{ level: string; message: string }> = []
 
-    const launcher = new SlaveLauncher({
+    const launcher = new AgentLauncher({
       type: 'worker',
       task,
       mission: 'Test logging',
@@ -765,7 +750,7 @@ describe('SlaveLauncher - Logging', () => {
     expect(logEvents.some((e) => e.level === 'info')).toBe(true)
   })
 
-  test('should include slaveId and taskId in log events', async () => {
+  test('should include agentId and taskId in log events', async () => {
     const task: Task = {
       id: 'test-task-log-ids',
       type: 'feature',
@@ -781,7 +766,7 @@ describe('SlaveLauncher - Logging', () => {
 
     let capturedEvent: LogMessageEvent | null = null
 
-    const launcher = new SlaveLauncher({
+    const launcher = new AgentLauncher({
       type: 'worker',
       task,
       mission: 'Test log IDs',
@@ -800,7 +785,7 @@ describe('SlaveLauncher - Logging', () => {
     }
 
     const event = capturedEvent as LogMessageEvent
-    expect(event.slaveId).toBeDefined()
+    expect(event.agentId).toBeDefined()
     expect(event.taskId).toBe(task.id)
     expect(event.timestamp).toBeDefined()
     expect(event.source).toBeDefined()
@@ -823,7 +808,7 @@ describe('SlaveLauncher - Logging', () => {
     const messages: string[] = []
     const sources: string[] = []
 
-    const launcher = new SlaveLauncher({
+    const launcher = new AgentLauncher({
       type: 'worker',
       task,
       mission: 'Test stream logs',
@@ -859,7 +844,7 @@ describe('SlaveLauncher - Logging', () => {
 
     const toolStepMessages: string[] = []
 
-    const launcher = new SlaveLauncher({
+    const launcher = new AgentLauncher({
       type: 'worker',
       task,
       mission: 'Test tool logs',

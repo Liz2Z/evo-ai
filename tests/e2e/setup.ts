@@ -36,7 +36,7 @@ export async function setupTestEnv(): Promise<{ testDir: string; dataDir: string
           apiKey: process.env.ANTHROPIC_API_KEY || '',
           baseUrl: process.env.ANTHROPIC_BASE_URL || '',
         },
-        master: {
+        manager: {
           runtimeMode: 'hybrid',
         },
       },

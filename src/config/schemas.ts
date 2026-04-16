@@ -1,9 +1,11 @@
 import { z } from 'zod'
 
-export const modelTierConfigSchema = z.object({
+export const agentModelConfigSchema = z.object({
   lite: z.string().default('glm-4.5-air'),
-  pro: z.string().default('glm-4.7'),
-  max: z.string().default('glm-5.1'),
+  inspector: z.string().default('glm-4.5-air'),
+  worker: z.string().default('glm-4.7'),
+  reviewer: z.string().default('glm-4.7'),
+  manager: z.string().default('glm-5.1'),
 })
 
 export const providerConfigSchema = z.object({
@@ -11,7 +13,7 @@ export const providerConfigSchema = z.object({
   baseUrl: z.string().optional(),
 })
 
-export const masterRuntimeConfigSchema = z.object({
+export const managerRuntimeConfigSchema = z.object({
   runtimeMode: z.enum(['heartbeat_agent', 'session_agent', 'hybrid']).default('heartbeat_agent'),
 })
 
@@ -21,13 +23,15 @@ export const configSchema = z.object({
   maxRetryAttempts: z.number().default(3),
   worktreesDir: z.string().default('.worktrees'),
   developBranch: z.string().default('develop'),
-  models: modelTierConfigSchema.default({
+  models: agentModelConfigSchema.default({
     lite: 'glm-4.5-air',
-    pro: 'glm-4.7',
-    max: 'glm-5.1',
+    inspector: 'glm-5.1',
+    worker: 'glm-4.7',
+    reviewer: 'glm-4.7',
+    manager: 'glm-4.7',
   }),
   provider: providerConfigSchema.default({}),
-  master: masterRuntimeConfigSchema.default({
+  manager: managerRuntimeConfigSchema.default({
     runtimeMode: 'heartbeat_agent',
   }),
 })

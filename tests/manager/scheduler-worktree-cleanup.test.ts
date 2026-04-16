@@ -5,11 +5,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Config, Task } from '../../src/types'
 import { ensureMissionWorkspace, removeWorktree } from '../../src/utils/git'
-import { addTask, loadMasterState, loadTasks, updateSlave } from '../../src/utils/storage'
+import { addTask, loadManagerState, loadTasks, updateAgent } from '../../src/utils/storage'
 
 const originalCwd = process.cwd()
 let repoDir: string
-let MasterClass: typeof import('../../src/master/scheduler').Master
+let MasterClass: typeof import('../../src/manager/scheduler').Manager
 
 const baseConfig: Config = {
   heartbeatInterval: 30_000,
@@ -19,17 +19,19 @@ const baseConfig: Config = {
   developBranch: 'main',
   models: {
     lite: 'haiku',
-    pro: 'sonnet',
-    max: 'opus',
+    inspector: 'haiku-inspector',
+    worker: 'sonnet',
+    reviewer: 'sonnet-review',
+    manager: 'opus',
   },
   provider: {},
-  master: {
+  manager: {
     runtimeMode: 'hybrid',
   },
 }
 
 beforeAll(async () => {
-  repoDir = join(tmpdir(), `evo-ai-master-repo-${Date.now()}`)
+  repoDir = join(tmpdir(), `evo-ai-manager-repo-${Date.now()}`)
   await mkdir(repoDir, { recursive: true })
   await mkdir(join(repoDir, '.evo-ai', '.data'), { recursive: true })
   await mkdir(join(repoDir, '.worktrees'), { recursive: true })
@@ -43,7 +45,7 @@ beforeAll(async () => {
   runCmd('git', ['commit', '-m', 'Initial commit'], repoDir)
 
   process.chdir(repoDir)
-  ;({ Master: MasterClass } = await import('../../src/master/scheduler'))
+  ;({ Manager: MasterClass } = await import('../../src/manager/scheduler'))
 })
 
 afterAll(async () => {
@@ -75,29 +77,29 @@ function createTask(overrides: Partial<Task> = {}): Task {
   }
 }
 
-describe('Master mission workspace recovery', () => {
+describe('Manager mission workspace recovery', () => {
   const mission = 'scheduler workspace mission'
 
   test('启动后会创建并记录 mission worktree', async () => {
-    const master = new MasterClass(baseConfig, mission)
-    await master.start()
+    const manager = new MasterClass(baseConfig, mission)
+    await manager.start()
     try {
-      const state = await loadMasterState()
+      const state = await loadManagerState()
       expect(state.missionWorktree).toBeDefined()
       expect(state.missionBranch).toBeDefined()
       expect(existsSync(state.missionWorktree!)).toBe(true)
     } finally {
-      await master.stop()
+      await manager.stop()
     }
   })
 
-  test('恢复时保留 mission worktree，并把 busy slave 置为 idle', async () => {
+  test('恢复时保留 mission worktree，并把 busy agent 置为 idle', async () => {
     const workspace = await ensureMissionWorkspace(mission, 'main')
     if (!workspace) throw new Error('workspace missing')
 
     const task = createTask({ status: 'running' })
     await addTask(task)
-    await updateSlave('worker-recovery-test', {
+    await updateAgent('worker-recovery-test', {
       id: 'worker-recovery-test',
       type: 'worker',
       status: 'busy',
@@ -105,21 +107,21 @@ describe('Master mission workspace recovery', () => {
       startedAt: new Date().toISOString(),
     })
 
-    const master = new MasterClass(baseConfig, mission) as any
-    master.state.missionWorktree = workspace.path
-    master.state.missionBranch = workspace.branch
-    master.state.currentTaskId = task.id
-    master.state.currentStage = 'working'
+    const manager = new MasterClass(baseConfig, mission) as any
+    manager.state.missionWorktree = workspace.path
+    manager.state.missionBranch = workspace.branch
+    manager.state.currentTaskId = task.id
+    manager.state.currentStage = 'working'
 
-    await master.start()
+    await manager.start()
     try {
-      const state = await loadMasterState()
+      const state = await loadManagerState()
       const tasks = await loadTasks()
       expect(state.missionWorktree).toBe(workspace.path)
       expect(existsSync(workspace.path)).toBe(true)
       expect(tasks.find((t) => t.id === task.id)?.status).toBe('pending')
     } finally {
-      await master.stop()
+      await manager.stop()
       await removeWorktree(workspace.path).catch(() => {})
     }
   })
@@ -130,7 +132,7 @@ describe('Master mission workspace recovery', () => {
 
     const task = createTask({ status: 'running' })
     await addTask(task)
-    await updateSlave('worker-orphan-test', {
+    await updateAgent('worker-orphan-test', {
       id: 'worker-orphan-test',
       type: 'worker',
       status: 'busy',
@@ -139,21 +141,21 @@ describe('Master mission workspace recovery', () => {
       pid: 999999,
     })
 
-    const master = new MasterClass(baseConfig, mission) as any
-    master.state.missionWorktree = workspace.path
-    master.state.missionBranch = workspace.branch
-    master.state.currentTaskId = task.id
-    master.state.currentStage = 'working'
+    const manager = new MasterClass(baseConfig, mission) as any
+    manager.state.missionWorktree = workspace.path
+    manager.state.missionBranch = workspace.branch
+    manager.state.currentTaskId = task.id
+    manager.state.currentStage = 'working'
 
-    await master.start()
+    await manager.start()
     try {
-      const state = await loadMasterState()
+      const state = await loadManagerState()
       const tasks = await loadTasks()
       expect(state.currentTaskId).toBeUndefined()
       expect(state.currentStage).toBe('idle')
       expect(tasks.find((item) => item.id === task.id)?.status).toBe('pending')
     } finally {
-      await master.stop()
+      await manager.stop()
       await removeWorktree(workspace.path).catch(() => {})
     }
   })

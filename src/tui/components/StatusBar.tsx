@@ -1,11 +1,11 @@
 import { Box, Text } from 'ink'
-import type { MasterStage } from '../../types'
+import type { ManagerStage } from '../../types'
 import type { MasterActivityItem } from './statusBarModel'
 
 interface StatusBarProps {
   mission?: string
   phase: string
-  stage: MasterStage
+  stage: ManagerStage
   heartbeatDisplay: string
   pendingQuestions: number
   masterActivities: MasterActivityItem[]
@@ -21,12 +21,13 @@ const PHASE_COLORS: Record<string, string> = {
   stopped: 'red',
 }
 
-const STAGE_COLORS: Record<MasterStage, string> = {
+const STAGE_COLORS: Record<ManagerStage, string> = {
   idle: 'gray',
   inspecting: 'magenta',
   working: 'yellow',
   reviewing: 'cyan',
   committing: 'green',
+  integrating: 'green',
 }
 
 const ACTIVITY_COLORS: Record<MasterActivityItem['kind'], string> = {
@@ -34,6 +35,7 @@ const ACTIVITY_COLORS: Record<MasterActivityItem['kind'], string> = {
   turn_completed: 'green',
   turn_failed: 'red',
   turn_skipped: 'gray',
+  turn_interrupted: 'magenta',
 }
 
 function normalizeActivities(
@@ -91,7 +93,7 @@ export function StatusBar({
               {activity.line}
             </Text>
           ) : (
-            <Text color="gray">waiting for master activity...</Text>
+            <Text color="gray">waiting for manager activity...</Text>
           )}
         </Box>
       ))}

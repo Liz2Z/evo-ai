@@ -77,12 +77,12 @@ export function assertReviewResult(result: unknown): asserts result is ReviewRes
  * 生成测试 mission
  */
 export function testMission(): string {
-  return 'E2E test: validate slave agent capabilities on a simple codebase'
+  return 'E2E test: validate agent agent capabilities on a simple codebase'
 }
 
 /**
  * 生成测试 recentDecisions
  */
 export function testRecentDecisions(): string[] {
-  return ['Running E2E tests to validate slave agent system']
+  return ['Running E2E tests to validate agent agent system']
 }

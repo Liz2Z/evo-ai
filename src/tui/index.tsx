@@ -1,19 +1,19 @@
 import { render } from 'ink'
-import type { Master } from '../master/scheduler'
+import type { Manager } from '../manager/scheduler'
 import { KanbanBoard } from './components/KanbanBoard'
 
 interface TUIOptions {
-  emitter: Master | null
-  master: Master | null
+  emitter: Manager | null
+  manager: Manager | null
   heartbeatIntervalMs: number
   onQuit: () => void
 }
 
-export function startTUI({ emitter, master, heartbeatIntervalMs, onQuit }: TUIOptions) {
+export function startTUI({ emitter, manager, heartbeatIntervalMs, onQuit }: TUIOptions) {
   const App = () => (
     <KanbanBoard
       emitter={emitter}
-      master={master}
+      manager={manager}
       heartbeatIntervalMs={heartbeatIntervalMs}
       onQuit={onQuit}
     />

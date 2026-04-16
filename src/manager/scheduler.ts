@@ -1,13 +1,15 @@
 import { EventEmitter } from 'node:events'
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
+import { resolve } from 'node:path'
+import { type AgentHandle, createAgentHandle, parseInspectorTasksSummary } from '../agents/launcher'
 import { getControlFilePath, getHealthFilePath } from '../runtime/paths'
-import { createSlaveHandle, parseInspectorTasksSummary, type SlaveHandle } from '../slave/launcher'
-import type { Config, MasterState, Question, ReviewResult, Task, TaskResult } from '../types'
+import type { Config, ManagerState, Question, ReviewResult, Task, TaskResult } from '../types'
 import type {
   HeartbeatTickEvent,
   LogMessageEvent,
-  MasterActivityEvent,
-  MasterStateEvent,
+  ManagerActivityEvent,
+  ManagerStateEvent,
   TaskStatusChangeEvent,
   WorktreeChangeEvent,
 } from '../types/events'
@@ -21,6 +23,7 @@ import {
   listWorktrees,
   mergeBranchIntoBase,
   removeWorktree,
+  runGit,
   validateMissionWorkspaceBranch,
 } from '../utils/git'
 import { addToGlobalBuffer, appendTaskLog, clearTaskLogBuffer, Logger } from '../utils/logger'
@@ -30,15 +33,16 @@ import {
   addMissionHistoryEntry,
   addQuestion,
   addTask,
+  enqueueManagerUserMessage,
+  loadAgents,
   loadFailedTasks,
   loadHistory,
-  loadMasterState,
+  loadManagerState,
   loadMissionHistory,
-  loadSlaves,
   loadTasks,
   type MissionHistoryEntry,
-  saveMasterState,
-  saveSlaves,
+  saveAgents,
+  saveManagerState,
   updateMissionHistoryEntry,
   updateTask,
 } from '../utils/storage'
@@ -46,21 +50,21 @@ import { hasChineseCharacters } from '../utils/task-text'
 import {
   type CommitTaskResult,
   type CompleteMissionResult,
-  createMasterRuntime,
-  type MasterRuntime,
-  type MasterRuntimeContext,
-  type MasterTools,
+  createManagerRuntime,
+  type ManagerRuntime,
+  type ManagerRuntimeContext,
+  type ManagerTools,
   type MissionWorkspaceResult,
   type ReviewerAssignmentResult,
   type WorkerAssignmentResult,
 } from './runtime'
 import { sanitizeInspectorTasks } from './task-sanitizer'
 
-interface MasterOptions {
-  runtimeFactory?: (config: Config, state: MasterState) => MasterRuntime
+interface ManagerOptions {
+  runtimeFactory?: (config: Config, state: ManagerState) => ManagerRuntime
 }
 
-function createInitialState(config: Config, mission: string): MasterState {
+function createInitialState(config: Config, mission: string): ManagerState {
   return {
     mission,
     currentPhase: 'initializing',
@@ -68,42 +72,50 @@ function createInitialState(config: Config, mission: string): MasterState {
     lastInspection: '',
     activeSince: new Date().toISOString(),
     pendingQuestions: [],
-    runtimeMode: config.master.runtimeMode,
+    runtimeMode: config.manager.runtimeMode,
     lastDecisionAt: '',
     turnStatus: 'idle',
     skippedWakeups: 0,
     currentStage: 'idle',
+    pendingUserMessages: [],
   }
 }
 
-export class Master extends EventEmitter {
+export class Manager extends EventEmitter {
+  private static readonly STARTUP_TURN_DELAY_MS = 25
   private readonly config: Config
-  private readonly options?: MasterOptions
-  private state: MasterState
-  private activeSlaves = 0
+  private readonly options?: ManagerOptions
+  private state: ManagerState
+  private activeAgents = 0
   private isRunning = false
   private isPaused = false
   private heartbeatTimer: ReturnType<typeof setTimeout> | null = null
-  private currentTurnPromise: Promise<void> | null = null
-  private readonly activeSlaveHandles = new Map<string, SlaveHandle>()
-  private readonly tools: MasterTools
-  private runtime: MasterRuntime
+  private startupTimer: ReturnType<typeof setTimeout> | null = null
+  private currentTurn: {
+    reason: string
+    interrupted: boolean
+    promise: Promise<void>
+  } | null = null
+  private readonly pendingTurnReasons = new Set<string>()
+  private readonly activeAgentHandles = new Map<string, AgentHandle>()
+  private readonly tools: ManagerTools
+  private runtime: ManagerRuntime
   private readonly logger: Logger
 
-  constructor(config: Config, mission: string, options?: MasterOptions) {
+  constructor(config: Config, mission: string, options?: ManagerOptions) {
     super()
     this.config = { ...config, maxConcurrency: 1 }
     this.options = options
     this.state = createInitialState(this.config, mission)
     this.runtime = this.createRuntime(this.state)
     this.tools = this.createTools()
-    this.logger = new Logger('Master')
+    this.logger = new Logger('Manager')
   }
 
   async start(): Promise<void> {
     this.isRunning = true
 
-    const savedState = await loadMasterState()
+    const savedState = await loadManagerState()
     const tasks = await loadTasks()
 
     if (
@@ -122,35 +134,41 @@ export class Master extends EventEmitter {
       ...createInitialState(this.config, this.state.mission || savedState.mission || ''),
       ...savedState,
       mission: this.state.mission || savedState.mission,
-      runtimeMode: this.config.master.runtimeMode,
+      runtimeMode: this.config.manager.runtimeMode,
       turnStatus: savedState.turnStatus || 'idle',
       skippedWakeups: savedState.skippedWakeups || 0,
       currentStage: savedState.currentStage || 'idle',
+      pendingUserMessages: savedState.pendingUserMessages || [],
     }
     this.isPaused = this.state.turnStatus === 'paused' || this.state.currentPhase === 'paused'
     this.runtime = this.createRuntime(this.state)
 
     await this.recoverStaleRuntimeState()
     await this.cleanupStaleWorktrees()
-    await this.refreshActiveSlaves()
+    await this.refreshActiveAgents()
     await this.ensureMissionWorkspaceReady()
 
     this.clearControlFile()
     this.state.currentPhase = this.isPaused ? 'paused' : 'idle'
     this.state.turnStatus = this.isPaused ? 'paused' : 'idle'
-    await saveMasterState(this.state)
+    await saveManagerState(this.state)
 
     await addHistoryEntry({
       timestamp: new Date().toISOString(),
       type: 'decision',
-      summary: `Master started with mission: ${this.state.mission} (mode=${this.config.master.runtimeMode})`,
+      summary: `Manager started with mission: ${this.state.mission} (mode=${this.config.manager.runtimeMode})`,
     })
 
     await this.runtime.init(await this.buildRuntimeContext('startup'), this.tools)
-    this.emitMasterState()
+    this.emitManagerState()
     this.writeHealthFile()
     this.scheduleHeartbeat()
-    void this.requestTurn('startup')
+    this.startupTimer = setTimeout(() => {
+      this.startupTimer = null
+      if (this.isRunning) {
+        void this.requestTurn('startup')
+      }
+    }, Manager.STARTUP_TURN_DELAY_MS)
   }
 
   async stop(): Promise<void> {
@@ -162,15 +180,25 @@ export class Master extends EventEmitter {
       clearTimeout(this.heartbeatTimer)
       this.heartbeatTimer = null
     }
+    if (this.startupTimer) {
+      clearTimeout(this.startupTimer)
+      this.startupTimer = null
+    }
 
-    const activeHandles = [...this.activeSlaveHandles.values()]
-    this.activeSlaveHandles.clear()
+    if (this.currentTurn) {
+      this.currentTurn.interrupted = true
+      await this.runtime.cancelCurrentTurn?.()
+      await this.currentTurn.promise.catch(() => {})
+    }
+
+    const activeHandles = [...this.activeAgentHandles.values()]
+    this.activeAgentHandles.clear()
     await Promise.allSettled(activeHandles.map((handle) => handle.cancel()))
 
     try {
       await this.runtime.dispose()
     } finally {
-      await saveMasterState(this.state)
+      await saveManagerState(this.state)
     }
   }
 
@@ -179,8 +207,8 @@ export class Master extends EventEmitter {
     this.state.currentPhase = 'paused'
     this.state.turnStatus = 'paused'
     this.writeHealthFile()
-    void saveMasterState(this.state)
-    this.emitMasterState()
+    void saveManagerState(this.state)
+    this.emitManagerState()
   }
 
   resume(): void {
@@ -188,9 +216,30 @@ export class Master extends EventEmitter {
     this.state.currentPhase = 'idle'
     this.state.turnStatus = 'idle'
     this.writeHealthFile()
-    void saveMasterState(this.state)
-    this.emitMasterState()
+    void saveManagerState(this.state)
+    this.emitManagerState()
     void this.requestTurn('resume')
+  }
+
+  async sendMessageToManager(text: string): Promise<void> {
+    const content = text.trim()
+    if (!content) {
+      throw new Error('Message cannot be empty')
+    }
+
+    await enqueueManagerUserMessage(content)
+    const persisted = await loadManagerState()
+    this.state.pendingUserMessages = persisted.pendingUserMessages || []
+
+    await addHistoryEntry({
+      timestamp: new Date().toISOString(),
+      type: 'decision',
+      summary: `Human message sent to manager: ${content.slice(0, 100)}`,
+      details: { pendingMessages: this.state.pendingUserMessages.length },
+    })
+
+    this.emitManagerState()
+    await this.requestTurn('user_message')
   }
 
   async addTaskManually(
@@ -226,8 +275,8 @@ export class Master extends EventEmitter {
     if (task && this.state.currentTaskId === taskId) {
       this.state.currentTaskId = undefined
       this.state.currentStage = 'idle'
-      await saveMasterState(this.state)
-      this.emitMasterState()
+      await saveManagerState(this.state)
+      this.emitManagerState()
     }
     if (task) {
       clearTaskLogBuffer(taskId)
@@ -235,7 +284,7 @@ export class Master extends EventEmitter {
     return task !== null
   }
 
-  getState(): MasterState {
+  getState(): ManagerState {
     return { ...this.state }
   }
 
@@ -267,8 +316,8 @@ export class Master extends EventEmitter {
 
     const oldMission = this.state.mission
     this.state.mission = trimmed
-    await saveMasterState(this.state)
-    this.emitMasterState()
+    await saveManagerState(this.state)
+    this.emitManagerState()
 
     await addMissionHistoryEntry({
       mission: trimmed,
@@ -334,7 +383,7 @@ export class Master extends EventEmitter {
     this.state.turnStatus = 'idle'
     this.state.currentPhase = 'idle'
 
-    await saveMasterState(this.state)
+    await saveManagerState(this.state)
 
     this.logger.info('Mission cleanup completed')
   }
@@ -343,23 +392,24 @@ export class Master extends EventEmitter {
     return await loadMissionHistory()
   }
 
-  private createRuntime(state: MasterState): MasterRuntime {
+  private createRuntime(state: ManagerState): ManagerRuntime {
     if (this.options?.runtimeFactory) {
       return this.options.runtimeFactory(this.config, state)
     }
-    return createMasterRuntime(this.config.master.runtimeMode, this.config, state)
+    return createManagerRuntime(this.config.manager.runtimeMode, this.config, state)
   }
 
-  private createTools(): MasterTools {
+  private createTools(): ManagerTools {
     return {
-      get_master_snapshot: async () => {
-        await this.refreshActiveSlaves()
+      get_manager_snapshot: async () => {
+        await this.refreshActiveAgents()
+        await this.refreshActiveAgents()
         return {
           mission: this.state.mission,
           runtimeMode: this.state.runtimeMode,
           currentPhase: this.state.currentPhase,
           turnStatus: this.state.turnStatus,
-          activeSlaves: this.activeSlaves,
+          activeAgents: this.activeAgents,
           maxConcurrency: 1,
           pendingCount: (await loadTasks()).filter((task) => task.status === 'pending').length,
           pendingQuestions: this.state.pendingQuestions,
@@ -372,6 +422,7 @@ export class Master extends EventEmitter {
           missionWorktree: this.state.missionWorktree,
           currentTaskId: this.state.currentTaskId,
           currentStage: this.state.currentStage,
+          pendingUserMessages: this.state.pendingUserMessages || [],
         }
       },
       list_tasks: async (input) => {
@@ -380,7 +431,7 @@ export class Master extends EventEmitter {
         const statuses = Array.isArray(input.status) ? input.status : [input.status]
         return tasks.filter((task) => statuses.includes(task.status))
       },
-      list_slaves: async () => loadSlaves(),
+      list_agents: async () => loadAgents(),
       get_task: async ({ taskId }) => this.getTaskById(taskId),
       get_recent_history: async (input) => {
         const history = await loadHistory()
@@ -460,7 +511,7 @@ export class Master extends EventEmitter {
         }
         await addQuestion(created)
         this.state.pendingQuestions = [...this.state.pendingQuestions, created]
-        await saveMasterState(this.state)
+        await saveManagerState(this.state)
         return created
       },
     }
@@ -468,7 +519,11 @@ export class Master extends EventEmitter {
 
   private scheduleHeartbeat(): void {
     if (!this.isRunning) return
+    if (this.heartbeatTimer) {
+      clearTimeout(this.heartbeatTimer)
+    }
     this.heartbeatTimer = setTimeout(() => {
+      this.heartbeatTimer = null
       void this.runHeartbeatTurn()
     }, this.config.heartbeatInterval)
   }
@@ -487,29 +542,79 @@ export class Master extends EventEmitter {
       await this.runtime.onExternalEvent({ reason, timestamp: new Date().toISOString() })
     }
 
-    if (this.currentTurnPromise) {
-      this.state.skippedWakeups += 1
-      this.state.lastSkippedTriggerReason = reason
-      this.emitMasterActivity({
-        timestamp: new Date().toISOString(),
-        triggerReason: reason,
-        summary: 'turn busy',
-        toolCalls: [],
-        kind: 'turn_skipped',
-      })
-      this.writeHealthFile()
-      await saveMasterState(this.state)
-      this.emitMasterState()
+    if (this.currentTurn) {
+      if (reason === 'user_message' && this.currentTurn.reason === 'heartbeat') {
+        this.pendingTurnReasons.delete('heartbeat')
+        this.pendingTurnReasons.add('user_message')
+        this.currentTurn.interrupted = true
+        this.emitManagerActivity({
+          timestamp: new Date().toISOString(),
+          triggerReason: reason,
+          summary: 'interrupting heartbeat for user message',
+          toolCalls: [],
+          kind: 'turn_interrupted',
+        })
+        await this.runtime.cancelCurrentTurn?.()
+      } else {
+        this.pendingTurnReasons.add(reason)
+        if (reason !== 'user_message') {
+          this.state.skippedWakeups += 1
+          this.state.lastSkippedTriggerReason = reason
+        }
+        this.emitManagerActivity({
+          timestamp: new Date().toISOString(),
+          triggerReason: reason,
+          summary: reason === 'user_message' ? 'queued behind active turn' : 'turn busy',
+          toolCalls: [],
+          kind: 'turn_skipped',
+        })
+        this.writeHealthFile()
+        await saveManagerState(this.state)
+        this.emitManagerState()
+      }
+
+      await this.currentTurn.promise
+      const pendingReason = this.consumePendingTurnReason()
+      if (pendingReason) {
+        await this.requestTurn(pendingReason)
+      }
       return
     }
 
-    this.currentTurnPromise = this.executeTurn(reason).finally(() => {
-      this.currentTurnPromise = null
+    const currentTurn = {
+      reason,
+      interrupted: false,
+      promise: Promise.resolve(),
+    }
+    currentTurn.promise = this.executeTurn(reason, currentTurn).finally(() => {
+      if (this.currentTurn === currentTurn) {
+        this.currentTurn = null
+      }
     })
-    await this.currentTurnPromise
+    this.currentTurn = currentTurn
+    await currentTurn.promise
+    const pendingReason = this.consumePendingTurnReason()
+    if (pendingReason) {
+      await this.requestTurn(pendingReason)
+    }
   }
 
-  private async executeTurn(reason: string): Promise<void> {
+  private consumePendingTurnReason(): string | null {
+    if (this.pendingTurnReasons.size === 0) return null
+    if (this.pendingTurnReasons.has('user_message')) {
+      this.pendingTurnReasons.delete('user_message')
+      return 'user_message'
+    }
+    const reasons = [...this.pendingTurnReasons]
+    this.pendingTurnReasons.clear()
+    if (reasons.length === 1) return reasons[0]
+    return `queued:${reasons.join('+')}`
+  }
+
+  private async executeTurn(
+    reason: string,
+    currentTurn: { reason: string; interrupted: boolean },
+  ): Promise<void> {
     this.checkControlFile()
     if (!this.isRunning) return
 
@@ -518,17 +623,20 @@ export class Master extends EventEmitter {
       this.state.currentPhase = 'paused'
       this.state.turnStatus = 'paused'
       this.writeHealthFile()
-      await saveMasterState(this.state)
-      this.emitMasterState()
+      await saveManagerState(this.state)
+      this.emitManagerState()
       return
     }
 
-    await this.refreshActiveSlaves()
+    await this.refreshActiveAgents()
 
     this.state.lastHeartbeat = new Date().toISOString()
     this.state.currentPhase = 'running'
     this.state.turnStatus = 'running'
-    this.emitMasterActivity({
+    const consumedUserMessageIds = new Set(
+      (this.state.pendingUserMessages || []).map((message) => message.id),
+    )
+    this.emitManagerActivity({
       timestamp: this.state.lastHeartbeat,
       triggerReason: reason,
       summary: `trigger=${reason}`,
@@ -536,20 +644,20 @@ export class Master extends EventEmitter {
       kind: 'turn_started',
     })
     this.writeHealthFile()
-    this.emitMasterState()
+    this.emitManagerState()
 
     const tasks = await loadTasks()
     this.emit('heartbeat', {
       timestamp: this.state.lastHeartbeat,
       phase: this.state.currentPhase,
-      activeSlaves: this.activeSlaves,
+      activeAgents: this.activeAgents,
       pendingCount: tasks.filter((task) => task.status === 'pending').length,
     } satisfies HeartbeatTickEvent)
 
     try {
       const context = await this.buildRuntimeContext(reason)
       const result = await this.runtime.runTurn(context, this.tools)
-      this.emitMasterActivity({
+      this.emitManagerActivity({
         timestamp: new Date().toISOString(),
         triggerReason: reason,
         summary: result.summary,
@@ -561,19 +669,34 @@ export class Master extends EventEmitter {
       if (result.sessionSummary !== undefined) {
         this.state.runtimeSessionSummary = result.sessionSummary
       }
+      const persisted = await loadManagerState()
+      this.state.pendingUserMessages = (persisted.pendingUserMessages || []).filter(
+        (message) => !consumedUserMessageIds.has(message.id),
+      )
 
       await this.handleFailedTasks()
       await addHistoryEntry({
         timestamp: this.state.lastDecisionAt,
         type: 'decision',
-        summary: `Master turn completed (${this.state.runtimeMode}, trigger=${reason}) tools=[${result.toolCalls.join(', ') || 'none'}]`,
+        summary: `Manager turn completed (${this.state.runtimeMode}, trigger=${reason}) tools=[${result.toolCalls.join(', ') || 'none'}]`,
         details: {
           summary: result.summary,
           unauthorizedToolCalls: result.unauthorizedToolCalls,
         },
       })
     } catch (error) {
-      this.emitMasterActivity({
+      if (currentTurn.interrupted) {
+        this.emitManagerActivity({
+          timestamp: new Date().toISOString(),
+          triggerReason: reason,
+          summary: `turn interrupted: ${reason}`,
+          toolCalls: [],
+          kind: 'turn_interrupted',
+        })
+        return
+      }
+
+      this.emitManagerActivity({
         timestamp: new Date().toISOString(),
         triggerReason: reason,
         summary: error instanceof Error ? error.message : String(error),
@@ -583,41 +706,43 @@ export class Master extends EventEmitter {
       await addHistoryEntry({
         timestamp: new Date().toISOString(),
         type: 'error',
-        summary: `Master turn failed: ${error}`,
+        summary: `Manager turn failed: ${error}`,
       })
     } finally {
-      await this.refreshActiveSlaves()
+      await this.refreshActiveAgents()
       this.state.currentPhase = 'idle'
       this.state.turnStatus = 'idle'
       this.writeHealthFile()
-      await saveMasterState(this.state)
-      this.emitMasterState()
+      await saveManagerState(this.state)
+      this.emitManagerState()
     }
   }
 
-  private async buildRuntimeContext(triggerReason: string): Promise<MasterRuntimeContext> {
-    const [tasks, slaves, history] = await Promise.all([loadTasks(), loadSlaves(), loadHistory()])
+  private async buildRuntimeContext(triggerReason: string): Promise<ManagerRuntimeContext> {
+    const [tasks, agents, history] = await Promise.all([loadTasks(), loadAgents(), loadHistory()])
     return {
       triggerReason,
       timestamp: new Date().toISOString(),
       mission: this.state.mission,
       config: this.config,
-      masterState: this.getState(),
+      managerState: this.getState(),
       tasks,
-      slaves,
+      agents,
       recentHistory: history.slice(-20),
+      userMessages: this.state.pendingUserMessages || [],
     }
   }
 
-  private async refreshActiveSlaves(): Promise<void> {
-    const slaves = await loadSlaves()
-    this.activeSlaves = slaves.filter((slave) => slave.status === 'busy').length
+  private async refreshActiveAgents(): Promise<void> {
+    const agents = await loadAgents()
+    this.activeAgents = agents.filter((agent) => agent.status === 'busy').length
   }
 
   private async syncPersistedStateFields(): Promise<void> {
-    const persisted = await loadMasterState()
+    const persisted = await loadManagerState()
     if (persisted.mission) this.state.mission = persisted.mission
     this.state.pendingQuestions = persisted.pendingQuestions || []
+    this.state.pendingUserMessages = persisted.pendingUserMessages || []
     this.state.missionBranch = persisted.missionBranch
     this.state.missionWorktree = persisted.missionWorktree
     this.state.currentTaskId = persisted.currentTaskId
@@ -668,7 +793,7 @@ export class Master extends EventEmitter {
 
     this.state.missionWorktree = workspace.path
     this.state.missionBranch = workspace.branch
-    await saveMasterState(this.state)
+    await saveManagerState(this.state)
     await updateMissionHistoryEntry(this.state.mission, {
       worktreeBranch: workspace.branch,
       worktreePath: workspace.path,
@@ -679,7 +804,7 @@ export class Master extends EventEmitter {
       path: workspace.path,
       branch: workspace.branch,
     } satisfies WorktreeChangeEvent)
-    this.emitMasterState()
+    this.emitManagerState()
 
     return {
       status: 'ready',
@@ -692,22 +817,22 @@ export class Master extends EventEmitter {
   private async launchInspector(
     reason: string,
   ): Promise<{ status: 'started' | 'noop'; createdTaskIds: string[]; message: string }> {
-    await this.refreshActiveSlaves()
+    await this.refreshActiveAgents()
     const tasks = await loadTasks()
     const hasActiveQueue = tasks.some((task) =>
       ['pending', 'running', 'reviewing'].includes(task.status),
     )
-    if (this.activeSlaves > 0 || this.state.currentTaskId || hasActiveQueue) {
+    if (this.activeAgents > 0 || this.state.currentTaskId || hasActiveQueue) {
       return { status: 'noop', createdTaskIds: [], message: 'Mission queue is not idle' }
     }
 
     this.state.currentStage = 'inspecting'
-    await saveMasterState(this.state)
-    this.emitMasterState()
-    this.activeSlaves++
+    await saveManagerState(this.state)
+    this.emitManagerState()
+    this.activeAgents++
 
     const recentDecisions = await this.getRecentDecisions()
-    const launcher = createSlaveHandle({
+    const launcher = createAgentHandle({
       type: 'inspector',
       task: {
         id: 'inspection',
@@ -725,13 +850,13 @@ export class Master extends EventEmitter {
       recentDecisions,
       onError: (error) => this.logger.error(`Inspector failed: ${error}`),
     })
-    this.activeSlaveHandles.set('inspection', launcher)
+    this.activeAgentHandles.set('inspection', launcher)
 
     void launcher
       .start()
       .then(() => launcher.execute())
       .then(async (newTasks) => {
-        this.activeSlaveHandles.delete('inspection')
+        this.activeAgentHandles.delete('inspection')
         const existingTasks = await loadTasks()
         const rawTasks =
           newTasks && 'summary' in newTasks
@@ -758,22 +883,22 @@ export class Master extends EventEmitter {
 
         this.state.lastInspection = new Date().toISOString()
         this.state.currentStage = 'idle'
-        this.activeSlaves = Math.max(0, this.activeSlaves - 1)
-        await saveMasterState(this.state)
-        this.emitMasterState()
+        this.activeAgents = Math.max(0, this.activeAgents - 1)
+        await saveManagerState(this.state)
+        this.emitManagerState()
         await this.requestTurn(`inspector_completed:${reason}`)
       })
       .catch(async (error) => {
-        this.activeSlaveHandles.delete('inspection')
-        this.activeSlaves = Math.max(0, this.activeSlaves - 1)
+        this.activeAgentHandles.delete('inspection')
+        this.activeAgents = Math.max(0, this.activeAgents - 1)
         this.state.currentStage = 'idle'
         await addHistoryEntry({
           timestamp: new Date().toISOString(),
           type: 'error',
           summary: `Inspector failed: ${error}`,
         })
-        await saveMasterState(this.state)
-        this.emitMasterState()
+        await saveManagerState(this.state)
+        this.emitManagerState()
         await this.requestTurn('inspector_failed')
       })
 
@@ -788,8 +913,8 @@ export class Master extends EventEmitter {
     if (!['pending', 'running'].includes(freshTask.status)) {
       return { status: 'noop', taskId: task.id, message: `Task is ${freshTask.status}` }
     }
-    if (this.activeSlaves > 0) {
-      return { status: 'noop', taskId: task.id, message: 'Another slave is already active' }
+    if (this.activeAgents > 0) {
+      return { status: 'noop', taskId: task.id, message: 'Another agent is already active' }
     }
 
     const workspace = await this.ensureMissionWorkspaceReady()
@@ -801,17 +926,17 @@ export class Master extends EventEmitter {
     await updateTask(freshTask.id, { status: 'running' })
     this.state.currentTaskId = freshTask.id
     this.state.currentStage = 'working'
-    await saveMasterState(this.state)
+    await saveManagerState(this.state)
     this.emitTaskStatusChange(freshTask.id, beforeStatus, 'running', {
       ...freshTask,
       status: 'running',
     })
-    this.emitMasterState()
+    this.emitManagerState()
 
-    this.activeSlaves++
+    this.activeAgents++
     const recentDecisions = await this.getRecentDecisions()
     const onLog = (event: LogMessageEvent) => this.handleLogEvent(event)
-    const launcher = createSlaveHandle({
+    const launcher = createAgentHandle({
       type: 'worker',
       task: { ...freshTask, status: 'running' },
       mission: this.state.mission,
@@ -820,25 +945,25 @@ export class Master extends EventEmitter {
       worktreePath: workspace.path,
       onLog,
     })
-    this.activeSlaveHandles.set(freshTask.id, launcher)
+    this.activeAgentHandles.set(freshTask.id, launcher)
 
     void launcher
       .start()
       .then(() => launcher.execute())
       .then(async (result) => {
-        this.activeSlaveHandles.delete(freshTask.id)
+        this.activeAgentHandles.delete(freshTask.id)
         if (result) {
           await this.handleWorkerResult(freshTask.id, result as TaskResult)
         } else {
           await this.failTask(freshTask.id, 'Worker returned no result')
         }
-        this.activeSlaves = Math.max(0, this.activeSlaves - 1)
+        this.activeAgents = Math.max(0, this.activeAgents - 1)
         await this.requestTurn(`worker_completed:${freshTask.id}`)
       })
       .catch(async (error) => {
-        this.activeSlaveHandles.delete(freshTask.id)
+        this.activeAgentHandles.delete(freshTask.id)
         await this.failTask(freshTask.id, error instanceof Error ? error.message : String(error))
-        this.activeSlaves = Math.max(0, this.activeSlaves - 1)
+        this.activeAgents = Math.max(0, this.activeAgents - 1)
         await this.requestTurn(`worker_failed:${freshTask.id}`)
       })
 
@@ -853,12 +978,12 @@ export class Master extends EventEmitter {
       await updateTask(taskId, { status: 'reviewing' })
       this.state.currentTaskId = taskId
       this.state.currentStage = 'reviewing'
-      await saveMasterState(this.state)
+      await saveManagerState(this.state)
       this.emitTaskStatusChange(taskId, latestTask.status, 'reviewing', {
         ...latestTask,
         status: 'reviewing',
       })
-      this.emitMasterState()
+      this.emitManagerState()
       await addHistoryEntry({
         timestamp: new Date().toISOString(),
         type: 'decision',
@@ -884,8 +1009,8 @@ export class Master extends EventEmitter {
     if (!worktreePath) {
       return { status: 'noop', taskId: task.id, message: 'Mission workspace is missing or invalid' }
     }
-    if (this.activeSlaves > 0) {
-      return { status: 'noop', taskId: task.id, message: 'Another slave is already active' }
+    if (this.activeAgents > 0) {
+      return { status: 'noop', taskId: task.id, message: 'Another agent is already active' }
     }
 
     const diff = await getUncommittedDiff(worktreePath)
@@ -896,13 +1021,13 @@ export class Master extends EventEmitter {
 
     this.state.currentTaskId = task.id
     this.state.currentStage = 'reviewing'
-    await saveMasterState(this.state)
-    this.emitMasterState()
+    await saveManagerState(this.state)
+    this.emitManagerState()
 
-    this.activeSlaves++
+    this.activeAgents++
     const recentDecisions = await this.getRecentDecisions()
     const onLog = (event: LogMessageEvent) => this.handleLogEvent(event)
-    const launcher = createSlaveHandle({
+    const launcher = createAgentHandle({
       type: 'reviewer',
       task,
       mission: this.state.mission,
@@ -911,25 +1036,25 @@ export class Master extends EventEmitter {
       worktreePath,
       onLog,
     })
-    this.activeSlaveHandles.set(task.id, launcher)
+    this.activeAgentHandles.set(task.id, launcher)
 
     void launcher
       .start()
       .then(() => launcher.execute())
       .then(async (result) => {
-        this.activeSlaveHandles.delete(task.id)
+        this.activeAgentHandles.delete(task.id)
         if (result) {
           await this.handleReviewResult(task.id, result as ReviewResult)
         } else {
           await this.failTask(task.id, 'Reviewer returned no result')
         }
-        this.activeSlaves = Math.max(0, this.activeSlaves - 1)
+        this.activeAgents = Math.max(0, this.activeAgents - 1)
         await this.requestTurn(`review_completed:${task.id}`)
       })
       .catch(async (error) => {
-        this.activeSlaveHandles.delete(task.id)
+        this.activeAgentHandles.delete(task.id)
         await this.failTask(task.id, error instanceof Error ? error.message : String(error))
-        this.activeSlaves = Math.max(0, this.activeSlaves - 1)
+        this.activeAgents = Math.max(0, this.activeAgents - 1)
         await this.requestTurn(`review_failed:${task.id}`)
       })
 
@@ -943,7 +1068,7 @@ export class Master extends EventEmitter {
     const nextAttempt = latestTask.attemptCount + 1
     const reviewEntry = {
       attempt: nextAttempt,
-      slaveId: 'reviewer',
+      agentId: 'reviewer',
       review: result,
       timestamp: new Date().toISOString(),
     }
@@ -965,8 +1090,8 @@ export class Master extends EventEmitter {
       })
       this.state.currentTaskId = taskId
       this.state.currentStage = 'committing'
-      await saveMasterState(this.state)
-      this.emitMasterState()
+      await saveManagerState(this.state)
+      this.emitManagerState()
       return
     }
 
@@ -978,7 +1103,7 @@ export class Master extends EventEmitter {
       })
       this.state.currentTaskId = undefined
       this.state.currentStage = 'idle'
-      await saveMasterState(this.state)
+      await saveManagerState(this.state)
       this.emitTaskStatusChange(taskId, latestTask.status, 'failed', {
         ...latestTask,
         status: 'failed',
@@ -986,7 +1111,7 @@ export class Master extends EventEmitter {
         reviewHistory,
       })
       clearTaskLogBuffer(taskId)
-      this.emitMasterState()
+      this.emitManagerState()
       return
     }
 
@@ -1001,7 +1126,7 @@ export class Master extends EventEmitter {
     })
     this.state.currentTaskId = taskId
     this.state.currentStage = 'working'
-    await saveMasterState(this.state)
+    await saveManagerState(this.state)
     this.emitTaskStatusChange(taskId, latestTask.status, 'running', {
       ...latestTask,
       status: 'running',
@@ -1011,7 +1136,7 @@ export class Master extends EventEmitter {
         : additionalContext,
       reviewHistory,
     })
-    this.emitMasterState()
+    this.emitManagerState()
   }
 
   private buildRetryContext(result: ReviewResult): string {
@@ -1089,8 +1214,8 @@ export class Master extends EventEmitter {
     }
 
     this.state.currentStage = 'committing'
-    await saveMasterState(this.state)
-    this.emitMasterState()
+    await saveManagerState(this.state)
+    this.emitManagerState()
 
     const result = await commitAllChanges(this.buildCommitMessage(task), worktreePath)
     if (!result.success) {
@@ -1101,10 +1226,10 @@ export class Master extends EventEmitter {
     await updateTask(taskId, { status: 'completed' })
     this.state.currentTaskId = undefined
     this.state.currentStage = 'idle'
-    await saveMasterState(this.state)
+    await saveManagerState(this.state)
     this.emitTaskStatusChange(taskId, task.status, 'completed', { ...task, status: 'completed' })
     clearTaskLogBuffer(taskId)
-    this.emitMasterState()
+    this.emitManagerState()
     await addHistoryEntry({
       timestamp: new Date().toISOString(),
       type: 'task_completed',
@@ -1121,7 +1246,7 @@ export class Master extends EventEmitter {
       ['pending', 'running', 'reviewing'].includes(task.status),
     )
 
-    if (this.activeSlaves > 0 || this.state.currentTaskId) {
+    if (this.activeAgents > 0 || this.state.currentTaskId) {
       return { status: 'noop', message: 'Mission still has active execution' }
     }
 
@@ -1141,8 +1266,8 @@ export class Master extends EventEmitter {
     }
 
     this.state.currentStage = 'integrating'
-    await saveMasterState(this.state)
-    this.emitMasterState()
+    await saveManagerState(this.state)
+    this.emitManagerState()
 
     const mergeResult = await mergeBranchIntoBase(
       this.state.missionBranch,
@@ -1152,8 +1277,8 @@ export class Master extends EventEmitter {
 
     if (!mergeResult.success) {
       this.state.currentStage = 'idle'
-      await saveMasterState(this.state)
-      this.emitMasterState()
+      await saveManagerState(this.state)
+      this.emitManagerState()
       await addHistoryEntry({
         timestamp: new Date().toISOString(),
         type: 'error',
@@ -1170,14 +1295,30 @@ export class Master extends EventEmitter {
       taskCount: tasks.length,
     })
 
-    const removed = await removeWorktree(worktreePath, { allowAssociated: true })
+    let removed = await removeWorktree(worktreePath, { allowAssociated: true })
+    if (!removed && existsSync(worktreePath)) {
+      await runGit(['worktree', 'prune'])
+      removed = await removeWorktree(worktreePath, { allowAssociated: true })
+    }
+    if (!removed && existsSync(worktreePath)) {
+      const managedRoot = resolve(process.cwd(), this.config.worktreesDir)
+      const resolvedWorktreePath = resolve(worktreePath)
+      if (
+        resolvedWorktreePath.startsWith(`${managedRoot}/`) ||
+        resolvedWorktreePath === managedRoot
+      ) {
+        await rm(resolvedWorktreePath, { recursive: true, force: true })
+        await runGit(['worktree', 'prune'])
+        removed = !existsSync(resolvedWorktreePath)
+      }
+    }
     const deleted = await deleteBranch(branchName)
 
     this.state.missionWorktree = undefined
     this.state.missionBranch = undefined
     this.state.currentStage = 'idle'
-    await saveMasterState(this.state)
-    this.emitMasterState()
+    await saveManagerState(this.state)
+    this.emitManagerState()
 
     this.emit('worktree:change', {
       mission: this.state.mission,
@@ -1224,7 +1365,7 @@ export class Master extends EventEmitter {
     })
     this.state.currentTaskId = undefined
     this.state.currentStage = 'idle'
-    await saveMasterState(this.state)
+    await saveManagerState(this.state)
     this.emitTaskStatusChange(taskId, latestTask.status, 'failed', {
       ...latestTask,
       status: 'failed',
@@ -1233,7 +1374,7 @@ export class Master extends EventEmitter {
         : `Failure: ${reason}`,
     })
     clearTaskLogBuffer(taskId)
-    this.emitMasterState()
+    this.emitManagerState()
   }
 
   private async handleFailedTasks(): Promise<void> {
@@ -1264,7 +1405,7 @@ export class Master extends EventEmitter {
     if (!event.taskId) return
     const entry = {
       timestamp: event.timestamp,
-      slaveId: event.slaveId,
+      agentId: event.agentId,
       taskId: event.taskId,
       source: event.source,
       level: event.level,
@@ -1288,8 +1429,8 @@ export class Master extends EventEmitter {
     } satisfies TaskStatusChangeEvent)
   }
 
-  private emitMasterState(): void {
-    this.emit('master:state', {
+  private emitManagerState(): void {
+    this.emit('manager:state', {
       phase: this.state.currentPhase,
       mission: this.state.mission,
       lastHeartbeat: this.state.lastHeartbeat,
@@ -1306,11 +1447,12 @@ export class Master extends EventEmitter {
       missionWorktree: this.state.missionWorktree,
       currentTaskId: this.state.currentTaskId,
       currentStage: this.state.currentStage,
-    } satisfies MasterStateEvent)
+      pendingUserMessages: this.state.pendingUserMessages || [],
+    } satisfies ManagerStateEvent)
   }
 
-  private emitMasterActivity(event: MasterActivityEvent): void {
-    this.emit('master:activity', event)
+  private emitManagerActivity(event: ManagerActivityEvent): void {
+    this.emit('manager:activity', event)
   }
 
   private checkControlFile(): void {
@@ -1347,7 +1489,7 @@ export class Master extends EventEmitter {
           turnStatus: this.state.turnStatus,
           runtimeMode: this.state.runtimeMode,
           isPaused: this.isPaused,
-          activeSlaves: this.activeSlaves,
+          activeAgents: this.activeAgents,
           lastHeartbeat: this.state.lastHeartbeat,
           lastDecisionAt: this.state.lastDecisionAt,
           skippedWakeups: this.state.skippedWakeups,
@@ -1356,6 +1498,7 @@ export class Master extends EventEmitter {
           currentStage: this.state.currentStage,
           currentTaskId: this.state.currentTaskId,
           missionWorktree: this.state.missionWorktree,
+          pendingUserMessages: this.state.pendingUserMessages || [],
           timestamp: new Date().toISOString(),
         }),
       )
@@ -1390,36 +1533,36 @@ export class Master extends EventEmitter {
   }
 
   private async recoverStaleRuntimeState(): Promise<void> {
-    const slaves = await loadSlaves()
+    const agents = await loadAgents()
     const activeTaskIds = new Set<string>()
     const activeReviewerTaskIds = new Set<string>()
-    let activeBusySlaves = 0
-    const recoveredSlaves = slaves.map((slave) => {
-      const processAlive = slave.pid ? this.isProcessAlive(slave.pid) : false
-      if (slave.status === 'busy' && processAlive && slave.currentTask) {
-        activeBusySlaves += 1
-        activeTaskIds.add(slave.currentTask)
-        if (slave.type === 'reviewer') {
-          activeReviewerTaskIds.add(slave.currentTask)
+    let activeBusyAgents = 0
+    const recoveredAgents = agents.map((agent) => {
+      const processAlive = agent.pid ? this.isProcessAlive(agent.pid) : false
+      if (agent.status === 'busy' && processAlive && agent.currentTask) {
+        activeBusyAgents += 1
+        activeTaskIds.add(agent.currentTask)
+        if (agent.type === 'reviewer') {
+          activeReviewerTaskIds.add(agent.currentTask)
         }
-        return slave
+        return agent
       }
-      if (slave.status === 'busy' && processAlive) {
-        activeBusySlaves += 1
-        return slave
+      if (agent.status === 'busy' && processAlive) {
+        activeBusyAgents += 1
+        return agent
       }
-      if (slave.status !== 'busy') return slave
+      if (agent.status !== 'busy') return agent
       return {
-        ...slave,
+        ...agent,
         status: 'idle' as const,
         currentTask: undefined,
         pid: undefined,
       }
     })
-    if (recoveredSlaves.some((slave, index) => slave !== slaves[index])) {
-      await saveSlaves(recoveredSlaves)
+    if (recoveredAgents.some((agent, index) => agent !== agents[index])) {
+      await saveAgents(recoveredAgents)
     }
-    this.activeSlaves = activeBusySlaves
+    this.activeAgents = activeBusyAgents
 
     const tasks = await loadTasks()
     let changed = false
@@ -1445,7 +1588,7 @@ export class Master extends EventEmitter {
       await addHistoryEntry({
         timestamp: new Date().toISOString(),
         type: 'decision',
-        summary: 'Recovered stale runtime state: reset busy slaves and resumed mission pipeline',
+        summary: 'Recovered stale runtime state: reset busy agents and resumed mission pipeline',
       })
     }
 
@@ -1457,7 +1600,7 @@ export class Master extends EventEmitter {
     }
 
     if (stateChanged) {
-      await saveMasterState(this.state)
+      await saveManagerState(this.state)
     }
   }
 
@@ -1504,8 +1647,8 @@ export class Master extends EventEmitter {
     this.logger.warn(`Mission worktree path no longer exists: ${worktreePath}`)
     this.state.missionWorktree = undefined
     this.state.missionBranch = undefined
-    void saveMasterState(this.state)
-    this.emitMasterState()
+    void saveManagerState(this.state)
+    this.emitManagerState()
     return null
   }
 }

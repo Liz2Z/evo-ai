@@ -13,7 +13,7 @@ const LOGS_DIR = join(getRuntimeDataDir(), 'logs')
 function logEntryKey(entry: LogEntry): string {
   return [
     entry.timestamp,
-    entry.slaveId,
+    entry.agentId,
     entry.taskId || '',
     entry.source,
     entry.level,
@@ -27,20 +27,20 @@ export async function appendTaskLog(taskId: string, entry: LogEntry): Promise<vo
   await appendFile(filePath, `${JSON.stringify(entry)}\n`)
 }
 
-export class SlaveLogger {
+export class AgentLogger {
   private buffers: Map<string, LogEntry[]> = new Map()
   private emitter: EventEmitter
-  private slaveId: string
+  private agentId: string
   private taskId?: string
 
-  constructor(emitter: EventEmitter, slaveId: string, taskId?: string) {
+  constructor(emitter: EventEmitter, agentId: string, taskId?: string) {
     this.emitter = emitter
-    this.slaveId = slaveId
+    this.agentId = agentId
     this.taskId = taskId
   }
 
   private async write(entry: LogEntry): Promise<void> {
-    const key = this.taskId || this.slaveId
+    const key = this.taskId || this.agentId
 
     // Ring buffer
     const buffer = this.buffers.get(key) || []
@@ -52,7 +52,7 @@ export class SlaveLogger {
 
     // Emit event for TUI
     const event: LogMessageEvent = {
-      slaveId: this.slaveId,
+      agentId: this.agentId,
       taskId: this.taskId,
       source: entry.source,
       level: entry.level,
@@ -76,7 +76,7 @@ export class SlaveLogger {
   info(message: string, source: LogEntry['source'] = 'status'): void {
     this.write({
       timestamp: getBeijingTimestamp(),
-      slaveId: this.slaveId,
+      agentId: this.agentId,
       taskId: this.taskId,
       source,
       level: 'info',
@@ -87,7 +87,7 @@ export class SlaveLogger {
   error(message: string, source: LogEntry['source'] = 'status'): void {
     this.write({
       timestamp: getBeijingTimestamp(),
-      slaveId: this.slaveId,
+      agentId: this.agentId,
       taskId: this.taskId,
       source,
       level: 'error',
@@ -98,7 +98,7 @@ export class SlaveLogger {
   debug(message: string, source: LogEntry['source'] = 'status'): void {
     this.write({
       timestamp: getBeijingTimestamp(),
-      slaveId: this.slaveId,
+      agentId: this.agentId,
       taskId: this.taskId,
       source,
       level: 'debug',
@@ -111,12 +111,12 @@ export class SlaveLogger {
   }
 
   getBuffer(taskId?: string): LogEntry[] {
-    const key = taskId || this.taskId || this.slaveId
+    const key = taskId || this.taskId || this.agentId
     return this.buffers.get(key) || []
   }
 }
 
-// Global log buffer for TUI access without needing a SlaveLogger instance
+// Global log buffer for TUI access without needing a AgentLogger instance
 const globalLogBuffer: Map<string, LogEntry[]> = new Map()
 
 export function getGlobalLogBuffer(): Map<string, LogEntry[]> {
@@ -166,7 +166,7 @@ export function clearTaskLogBuffer(taskId: string): void {
 }
 
 /**
- * Simple logger for master and CLI operations
+ * Simple logger for manager and CLI operations
  */
 export class Logger {
   private readonly context: string

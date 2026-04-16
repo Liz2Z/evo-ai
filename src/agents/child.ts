@@ -1,5 +1,5 @@
-import { updateSlave } from '../utils/storage'
-import { type SlaveExecutionResult, SlaveLauncher, type SlaveOptions } from './launcher'
+import { updateAgent } from '../utils/storage'
+import { type AgentExecutionResult, AgentLauncher, type AgentOptions } from './launcher'
 
 function emit(payload: Record<string, unknown>): void {
   process.stdout.write(`${JSON.stringify(payload)}\n`)
@@ -19,10 +19,10 @@ function serializeError(error: unknown): { message: string; stack?: string } {
 
 async function main(): Promise<void> {
   const raw = await Bun.stdin.text()
-  const parsed = JSON.parse(raw) as { options: SlaveOptions }
+  const parsed = JSON.parse(raw) as { options: AgentOptions }
   const options = parsed.options
 
-  const launcher = new SlaveLauncher({
+  const launcher = new AgentLauncher({
     ...options,
     onLog: (event) => {
       options.onLog?.(event)
@@ -42,11 +42,11 @@ async function main(): Promise<void> {
     void cancel()
   })
 
-  const { slaveId } = await launcher.start()
-  await updateSlave(slaveId, { pid: process.pid })
-  emit({ type: 'started', slaveId, pid: process.pid })
+  const { agentId } = await launcher.start()
+  await updateAgent(agentId, { pid: process.pid })
+  emit({ type: 'started', agentId, pid: process.pid })
 
-  const result = (await launcher.execute()) as SlaveExecutionResult
+  const result = (await launcher.execute()) as AgentExecutionResult
   emit({ type: 'result', result })
 }
 

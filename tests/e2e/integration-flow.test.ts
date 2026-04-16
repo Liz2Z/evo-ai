@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { runReviewer, runWorker } from '../../src/slave/launcher'
+import { runReviewer, runWorker } from '../../src/agents/launcher'
 import {
   commitAllChanges,
   deleteBranch,

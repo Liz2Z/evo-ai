@@ -1,10 +1,10 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { loadMasterState, loadMissionHistory } from './storage'
+import { loadManagerState, loadMissionHistory } from './storage'
 
 const FALLBACK_GIT_PATHS = ['/opt/homebrew/bin/git', '/usr/local/bin/git', '/usr/bin/git']
 let cachedGitBinary: string | null = null
-const PROTECTED_INTEGRATION_BRANCHES = new Set(['main', 'master', 'develop', 'dev'])
+const PROTECTED_INTEGRATION_BRANCHES = new Set(['main', 'manager', 'develop', 'dev'])
 
 type GitExecResult = { stdout: string; stderr: string; exitCode: number; spawnError?: string }
 
@@ -230,7 +230,7 @@ export async function validateMissionWorkspaceBranch(
 
 export interface WorktreeMissionAssociation {
   mission: string
-  source: 'master' | 'history' | 'local'
+  source: 'manager' | 'history' | 'local'
 }
 
 function normalizeWorktreePath(worktreePath: string): string {
@@ -238,7 +238,7 @@ function normalizeWorktreePath(worktreePath: string): string {
 }
 
 async function readLocalWorktreeMission(worktreePath: string): Promise<string | null> {
-  const masterStateFile = join(worktreePath, '.evo-ai', '.data', 'master.json')
+  const masterStateFile = join(worktreePath, '.evo-ai', '.data', 'manager.json')
   if (!existsSync(masterStateFile)) return null
 
   try {
@@ -257,15 +257,15 @@ export async function getWorktreeMissionAssociations(
   const normalizedPath = normalizeWorktreePath(worktreePath)
   const associations = new Map<string, WorktreeMissionAssociation>()
 
-  const masterState = await loadMasterState()
+  const masterState = await loadManagerState()
   if (
     masterState.missionWorktree &&
     normalizeWorktreePath(masterState.missionWorktree) === normalizedPath &&
     masterState.mission.trim()
   ) {
-    associations.set(`master:${masterState.mission}`, {
+    associations.set(`manager:${masterState.mission}`, {
       mission: masterState.mission,
-      source: 'master',
+      source: 'manager',
     })
   }
 

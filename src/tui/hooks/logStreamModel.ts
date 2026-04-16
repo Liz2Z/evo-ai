@@ -10,7 +10,7 @@ export const DEFAULT_LOG_LIMIT = 200
 function logEntryKey(entry: LogEntry): string {
   return [
     entry.timestamp,
-    entry.slaveId,
+    entry.agentId,
     entry.taskId || '',
     entry.source,
     entry.level,
@@ -26,7 +26,7 @@ export function normalizeSlaveIds(slaveIds?: string[]): string[] | undefined {
 export function matchesSlaveFilter(entry: LogEntry, slaveIds?: string[]): boolean {
   if (!slaveIds) return true
   if (slaveIds.length === 0) return false
-  return slaveIds.includes(entry.slaveId)
+  return slaveIds.includes(entry.agentId)
 }
 
 export function parseLogFileContent(content: string): LogEntry[] {
@@ -39,7 +39,7 @@ export function parseLogFileContent(content: string): LogEntry[] {
         const parsed = JSON.parse(line) as Partial<LogEntry>
         if (
           typeof parsed.timestamp !== 'string' ||
-          typeof parsed.slaveId !== 'string' ||
+          typeof parsed.agentId !== 'string' ||
           typeof parsed.level !== 'string' ||
           typeof parsed.message !== 'string'
         ) {
@@ -48,7 +48,7 @@ export function parseLogFileContent(content: string): LogEntry[] {
         return [
           {
             timestamp: parsed.timestamp,
-            slaveId: parsed.slaveId,
+            agentId: parsed.agentId,
             taskId: parsed.taskId,
             source: parsed.source || 'status',
             level: parsed.level as LogEntry['level'],

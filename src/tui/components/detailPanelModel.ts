@@ -1,4 +1,4 @@
-import type { SlaveInfo, Task } from '../../types'
+import type { AgentInfo, Task } from '../../types'
 
 const ACTIVE_TASK_STATUSES: Task['status'][] = ['running', 'reviewing']
 const MIN_SUMMARY_SECTION_HEIGHT = 6
@@ -17,11 +17,11 @@ export function isActiveTask(task: Task | null): boolean {
   return ACTIVE_TASK_STATUSES.includes(task.status)
 }
 
-export function getActiveTaskSlaves(taskId: string | null, slaves: SlaveInfo[]): SlaveInfo[] {
+export function getActiveTaskSlaves(taskId: string | null, agents: AgentInfo[]): AgentInfo[] {
   if (!taskId) return []
 
-  return slaves
-    .filter((slave) => slave.status === 'busy' && slave.currentTask === taskId)
+  return agents
+    .filter((agent) => agent.status === 'busy' && agent.currentTask === taskId)
     .sort((a, b) => (a.startedAt || '').localeCompare(b.startedAt || ''))
 }
 

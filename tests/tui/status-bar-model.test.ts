@@ -47,7 +47,7 @@ describe('statusBarModel', () => {
     expect(elapsed.display).toBe('0s/30s')
   })
 
-  test('master activity 只保留最近 3 条，重复事件不会重复入队', () => {
+  test('manager activity 只保留最近 3 条，重复事件不会重复入队', () => {
     let activities = mergeMasterActivities([], {
       timestamp: '2026-04-15T10:00:00.000Z',
       triggerReason: 'startup',
@@ -60,7 +60,7 @@ describe('statusBarModel', () => {
       timestamp: '2026-04-15T10:00:01.000Z',
       triggerReason: 'startup',
       summary: 'Worker assigned to task-1',
-      toolCalls: ['get_master_snapshot', 'assign_worker'],
+      toolCalls: ['get_manager_snapshot', 'assign_worker'],
       kind: 'turn_completed',
     })
 

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { runInspector, runReviewer, runWorker, SlaveLauncher } from '../../src/slave/launcher'
+import { AgentLauncher, runInspector, runReviewer, runWorker } from '../../src/agents/launcher'
 import {
   deleteBranch,
   ensureMissionWorkspace,
@@ -82,10 +82,10 @@ describe('Slave 生命周期', () => {
     E2E_TIMEOUT,
   )
 
-  test('SlaveLauncher start/cancel 可正常执行', async () => {
+  test('AgentLauncher start/cancel 可正常执行', async () => {
     if (!workspace) throw new Error('workspace missing')
     const task = createTestTask({ description: 'Storage registration test' })
-    const launcher = new SlaveLauncher({
+    const launcher = new AgentLauncher({
       type: 'worker',
       task,
       mission: testMission(),
@@ -93,14 +93,14 @@ describe('Slave 生命周期', () => {
       worktreePath: workspace.path,
     })
 
-    const { slaveId } = await launcher.start()
-    expect(slaveId.startsWith('worker-')).toBe(true)
+    const { agentId } = await launcher.start()
+    expect(agentId.startsWith('worker-')).toBe(true)
     await launcher.cancel()
   })
 
   test('Slave cancel 后可以重复调用且不抛错', async () => {
     const task = createTestTask({ description: 'Cancel test' })
-    const launcher = new SlaveLauncher({
+    const launcher = new AgentLauncher({
       type: 'worker',
       task,
       mission: testMission(),

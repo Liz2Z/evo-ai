@@ -9,12 +9,12 @@ import {
   type PiSessionLifecycle,
 } from '../agent/pi'
 import { getConfiguredModel, settings } from '../config'
-import type { ReviewResult, SlaveType, Task, TaskResult } from '../types'
+import type { AgentRole, ReviewResult, Task, TaskResult } from '../types'
 import type { LogMessageEvent } from '../types/events'
 import { getUncommittedChangedFiles } from '../utils/git'
-import type { SlaveLogger } from '../utils/logger'
+import type { AgentLogger } from '../utils/logger'
 import { Logger } from '../utils/logger'
-import { addHistoryEntry, updateSlave } from '../utils/storage'
+import { addHistoryEntry, updateAgent } from '../utils/storage'
 
 const PROMPTS_DIR = join(import.meta.dir, 'prompts')
 const CHILD_ENTRY_PATH = join(import.meta.dir, 'child.ts')
@@ -59,7 +59,7 @@ class RateLimiter {
 
 const apiLimiter = new RateLimiter(1, 2000)
 
-function loadPrompt(type: SlaveType): string {
+function loadPrompt(type: AgentRole): string {
   return readFileSync(join(PROMPTS_DIR, `${type}.md`), 'utf-8')
 }
 
@@ -67,7 +67,7 @@ function generateTaskId(): string {
   return `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
 }
 
-function generateSlaveId(type: SlaveType): string {
+function generateAgentId(type: AgentRole): string {
   return `${type}-${generateTaskId()}`
 }
 
@@ -236,24 +236,24 @@ function summarizeToolResult(result: unknown): string | null {
   return truncateInline(stringifyToolValue(record, 120), 120)
 }
 
-export interface SlaveOptions {
-  type: SlaveType
+export interface AgentOptions {
+  type: AgentRole
   task: Task
   mission: string
   recentDecisions: string[]
   baseBranch?: string
   additionalContext?: string
   worktreePath?: string
-  logger?: SlaveLogger
+  logger?: AgentLogger
   onLog?: (event: LogMessageEvent) => void
   onError?: (error: unknown) => void
 }
 
-export type SlaveExecutionResult = TaskResult | ReviewResult | null
+export type AgentExecutionResult = TaskResult | ReviewResult | null
 
-export interface SlaveHandle {
-  start(): Promise<{ slaveId: string }>
-  execute(): Promise<SlaveExecutionResult>
+export interface AgentHandle {
+  start(): Promise<{ agentId: string }>
+  execute(): Promise<AgentExecutionResult>
   cancel(): Promise<void>
 }
 
@@ -281,7 +281,7 @@ interface ChildProcessHandle {
 
 interface SlaveChildStartedMessage {
   type: 'started'
-  slaveId: string
+  agentId: string
   pid: number
 }
 
@@ -292,7 +292,7 @@ interface SlaveChildLogMessage {
 
 interface SlaveChildResultMessage {
   type: 'result'
-  result: SlaveExecutionResult
+  result: AgentExecutionResult
 }
 
 interface SlaveChildErrorMessage {
@@ -301,7 +301,7 @@ interface SlaveChildErrorMessage {
   stack?: string
 }
 
-type SlaveChildMessage =
+type AgentChildMessage =
   | SlaveChildStartedMessage
   | SlaveChildLogMessage
   | SlaveChildResultMessage
@@ -366,18 +366,18 @@ async function consumeReadableStream(
   }
 }
 
-export class ProcessSlaveLauncher implements SlaveHandle {
+export class ProcessAgentLauncher implements AgentHandle {
   private subprocess?: ChildProcessHandle
-  private readonly startDeferred = createDeferred<{ slaveId: string }>()
-  private readonly resultDeferred = createDeferred<SlaveExecutionResult>()
+  private readonly startDeferred = createDeferred<{ agentId: string }>()
+  private readonly resultDeferred = createDeferred<AgentExecutionResult>()
   private stderrBuffer = ''
   private stdoutBuffer = ''
-  private slaveId?: string
+  private agentId?: string
   private started = false
 
-  constructor(private readonly options: SlaveOptions) {}
+  constructor(private readonly options: AgentOptions) {}
 
-  async start(): Promise<{ slaveId: string }> {
+  async start(): Promise<{ agentId: string }> {
     if (this.started) {
       return this.startDeferred.promise
     }
@@ -427,7 +427,7 @@ export class ProcessSlaveLauncher implements SlaveHandle {
     return this.startDeferred.promise
   }
 
-  async execute(): Promise<SlaveExecutionResult> {
+  async execute(): Promise<AgentExecutionResult> {
     if (!this.started) {
       await this.start()
     }
@@ -440,8 +440,8 @@ export class ProcessSlaveLauncher implements SlaveHandle {
       await this.subprocess.exited.catch(() => {})
     }
 
-    if (this.slaveId) {
-      await updateSlave(this.slaveId, {
+    if (this.agentId) {
+      await updateAgent(this.agentId, {
         status: 'idle',
         currentTask: undefined,
         pid: undefined,
@@ -462,17 +462,17 @@ export class ProcessSlaveLauncher implements SlaveHandle {
   }
 
   private handleChildMessage(line: string): void {
-    let message: SlaveChildMessage
+    let message: AgentChildMessage
     try {
-      message = JSON.parse(line) as SlaveChildMessage
+      message = JSON.parse(line) as AgentChildMessage
     } catch {
       this.stderrBuffer += `${line}\n`
       return
     }
 
     if (message.type === 'started') {
-      this.slaveId = message.slaveId
-      this.startDeferred.resolve({ slaveId: message.slaveId })
+      this.agentId = message.agentId
+      this.startDeferred.resolve({ agentId: message.agentId })
       return
     }
 
@@ -491,23 +491,23 @@ export class ProcessSlaveLauncher implements SlaveHandle {
   }
 }
 
-export function createSlaveHandle(options: SlaveOptions): SlaveHandle {
+export function createAgentHandle(options: AgentOptions): AgentHandle {
   if (process.env.EVO_AI_CHILD_SLAVE === '1' || !shouldUseIsolatedSlaveProcess()) {
-    return new SlaveLauncher(options)
+    return new AgentLauncher(options)
   }
-  return new ProcessSlaveLauncher(options)
+  return new ProcessAgentLauncher(options)
 }
 
-export class SlaveLauncher {
-  private readonly slaveId: string
-  private readonly type: SlaveType
+export class AgentLauncher {
+  private readonly agentId: string
+  private readonly type: AgentRole
   private readonly task: Task
-  private readonly logger?: SlaveLogger
+  private readonly logger?: AgentLogger
   private readonly onLog?: (event: LogMessageEvent) => void
   private activeSession?: PiSessionLifecycle
 
-  constructor(private options: SlaveOptions) {
-    this.slaveId = generateSlaveId(options.type)
+  constructor(private options: AgentOptions) {
+    this.agentId = generateAgentId(options.type)
     this.type = options.type
     this.task = options.task
     this.logger = options.logger
@@ -520,7 +520,7 @@ export class SlaveLauncher {
     source: 'status' | 'agent_text' | 'tool_step' = 'status',
   ): void {
     const event: LogMessageEvent = {
-      slaveId: this.slaveId,
+      agentId: this.agentId,
       taskId: this.task.id,
       source,
       level,
@@ -535,21 +535,21 @@ export class SlaveLauncher {
     this.onLog?.(event)
   }
 
-  async start(): Promise<{ slaveId: string }> {
-    await updateSlave(this.slaveId, {
-      id: this.slaveId,
+  async start(): Promise<{ agentId: string }> {
+    await updateAgent(this.agentId, {
+      id: this.agentId,
       type: this.type,
       status: 'busy',
       currentTask: this.task.id,
       startedAt: new Date().toISOString(),
     })
 
-    return { slaveId: this.slaveId }
+    return { agentId: this.agentId }
   }
 
   async execute(): Promise<TaskResult | ReviewResult | null> {
     try {
-      this.log('debug', `Preparing ${this.type} slave context`)
+      this.log('debug', `Preparing ${this.type} agent context`)
       const basePrompt = loadPrompt(this.type)
       const contextPrompt = this.buildContextPrompt()
       const fullSystemPrompt = `${basePrompt}\n\n${contextPrompt}`
@@ -605,7 +605,7 @@ export class SlaveLauncher {
 
       try {
         const config = this.getRunConfig()
-        const modelId = getConfiguredModel(config, 'slave') || config.models.pro
+        const modelId = getConfiguredModel(config, this.type) || config.models[this.type]
         const cwd = resolve(workingDir)
         const tools = this.type === 'worker' ? createCodingTools(cwd) : createReadOnlyTools(cwd)
         const { session } = await createPiSession({
@@ -633,12 +633,12 @@ export class SlaveLauncher {
       return this.parseTaskResult(output)
     } catch (error) {
       this.options.onError?.(error)
-      this.log('error', `Slave ${this.slaveId} failed: ${error}`)
+      this.log('error', `Slave ${this.agentId} failed: ${error}`)
       await addHistoryEntry({
         timestamp: new Date().toISOString(),
         type: 'error',
         taskId: this.task.id,
-        slaveId: this.slaveId,
+        agentId: this.agentId,
         summary: `Slave execution failed: ${error}`,
       })
       return null
@@ -771,7 +771,7 @@ export class SlaveLauncher {
   }
 
   private async cleanup(): Promise<void> {
-    await updateSlave(this.slaveId, {
+    await updateAgent(this.agentId, {
       status: 'idle',
       currentTask: undefined,
       pid: undefined,
@@ -779,7 +779,7 @@ export class SlaveLauncher {
   }
 
   async cancel(): Promise<void> {
-    this.log('info', `${this.type} slave ${this.slaveId} cancelled`)
+    this.log('info', `${this.type} agent ${this.agentId} cancelled`)
     await abortPiSession(this.activeSession)
     disposePiSession(this.activeSession)
     this.activeSession = undefined
@@ -802,7 +802,7 @@ export async function runInspector(mission: string, recentDecisions: string[]): 
     reviewHistory: [],
   }
 
-  const launcher = createSlaveHandle({
+  const launcher = createAgentHandle({
     type: 'inspector',
     task: inspectorTask,
     mission,
@@ -847,7 +847,7 @@ export async function runWorker(
   worktreePath: string,
   onLog?: (event: LogMessageEvent) => void,
 ): Promise<TaskResult | null> {
-  const launcher = createSlaveHandle({
+  const launcher = createAgentHandle({
     type: 'worker',
     task,
     mission,
@@ -869,7 +869,7 @@ export async function runReviewer(
   worktreePath?: string,
   onLog?: (event: LogMessageEvent) => void,
 ): Promise<ReviewResult | null> {
-  const launcher = createSlaveHandle({
+  const launcher = createAgentHandle({
     type: 'reviewer',
     task,
     mission,

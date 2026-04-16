@@ -37,7 +37,7 @@ You are working in an isolated git worktree. This means:
 5. **Stop After Implementation**
    - Do not commit
    - Do not merge
-   - Leave the diff in the mission worktree for the reviewer and master to handle
+   - Leave the diff in the mission worktree for the reviewer and manager to handle
 
 ## Output Format
 

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { sanitizeInspectorTasks } from '../../src/master/task-sanitizer'
+import { sanitizeInspectorTasks } from '../../src/manager/task-sanitizer'
 import type { Task } from '../../src/types'
 
 function createTask(id: string, description: string, status: Task['status'] = 'pending'): Task {
@@ -10,7 +10,7 @@ function createTask(id: string, description: string, status: Task['status'] = 'p
     status,
     priority: 5,
     description,
-    context: 'Mission link: 这是当前 mission 的直接下一步。Scope: src/master/scheduler.ts',
+    context: 'Mission link: 这是当前 mission 的直接下一步。Scope: src/manager/scheduler.ts',
     createdAt: now,
     updatedAt: now,
     attemptCount: 0,
@@ -89,7 +89,7 @@ describe('sanitizeInspectorTasks', () => {
   test('允许带 follow-up 说明的任务', () => {
     const task = createTask('n1', '为新的 mission 流程补充聚焦回归测试')
     task.context =
-      '后续价值：加固刚完成的 mission 路径。作用范围：tests/master/runtime-driver.test.ts'
+      '后续价值：加固刚完成的 mission 路径。作用范围：tests/manager/runtime-driver.test.ts'
 
     const result = sanitizeInspectorTasks([task], [])
     expect(result.accepted.map((item) => item.id)).toEqual(['n1'])

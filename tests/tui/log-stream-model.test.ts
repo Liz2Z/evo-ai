@@ -13,7 +13,7 @@ import { addToGlobalBuffer, clearTaskLogBuffer, getGlobalLogBuffer } from '../..
 function logEntry(overrides: Partial<LogEntry>): LogEntry {
   return {
     timestamp: '2026-04-08T10:00:00.000Z',
-    slaveId: 'worker-1',
+    agentId: 'worker-1',
     taskId: 'task-1',
     source: 'status',
     level: 'info',
@@ -28,13 +28,13 @@ afterEach(async () => {
 })
 
 describe('logStreamModel', () => {
-  test('同一任务多个 slave 日志时，仅返回目标 slave 的日志', () => {
+  test('同一任务多个 agent 日志时，仅返回目标 agent 的日志', () => {
     const merged = mergeLogEntries(
       [
         [
-          logEntry({ slaveId: 'worker-1', message: 'worker log' }),
+          logEntry({ agentId: 'worker-1', message: 'worker log' }),
           logEntry({
-            slaveId: 'reviewer-1',
+            agentId: 'reviewer-1',
             message: 'reviewer log',
             timestamp: '2026-04-08T10:00:01.000Z',
           }),

@@ -1,8 +1,8 @@
-import type { MasterActivityEvent } from '../../types/events'
+import type { ManagerActivityEvent } from '../../types/events'
 
 export interface MasterActivityItem {
   id: string
-  kind: MasterActivityEvent['kind']
+  kind: ManagerActivityEvent['kind']
   line: string
 }
 
@@ -41,7 +41,7 @@ export function formatHeartbeatDisplay(params: {
 
 export function mergeMasterActivities(
   existing: MasterActivityItem[],
-  event: MasterActivityEvent,
+  event: ManagerActivityEvent,
 ): MasterActivityItem[] {
   const normalizedSummary = normalizeActivityText(event.summary)
   const nextItem: MasterActivityItem = {
@@ -57,7 +57,7 @@ export function mergeMasterActivities(
   return [nextItem, ...existing].slice(0, MAX_MASTER_ACTIVITIES)
 }
 
-function formatMasterActivity(event: MasterActivityEvent, summary: string): string {
+function formatMasterActivity(event: ManagerActivityEvent, summary: string): string {
   if (event.kind === 'turn_started') {
     return `thinking: ${summary}`
   }

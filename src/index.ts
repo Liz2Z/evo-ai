@@ -2,13 +2,13 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 import { settings } from './config'
-import { Master } from './master/scheduler'
+import { Manager } from './manager/scheduler'
 import { getControlFilePath, getHealthFilePath, getRuntimeDataDir } from './runtime/paths'
 import { startTUI } from './tui/index'
 import type { Task } from './types'
 import { branchExists, isGitRepo } from './utils/git'
 import { Logger } from './utils/logger'
-import { answerQuestion, loadFailedTasks, loadMasterState, loadTasks } from './utils/storage'
+import { answerQuestion, loadFailedTasks, loadManagerState, loadTasks } from './utils/storage'
 
 const logger = new Logger('CLI')
 
@@ -21,7 +21,7 @@ function resolveStartupMission(savedMission?: string, cliMission?: string): stri
 }
 
 function shouldLockMission(
-  savedState: Awaited<ReturnType<typeof loadMasterState>>,
+  savedState: Awaited<ReturnType<typeof loadManagerState>>,
   taskCount: number,
 ): boolean {
   return Boolean(savedState.missionWorktree || savedState.currentTaskId || taskCount > 0)
@@ -82,7 +82,7 @@ async function main() {
   }
 
   const config = settings.get()
-  const savedState = await loadMasterState()
+  const savedState = await loadManagerState()
   const existingTasks = await loadTasks()
 
   const cliMission = getString(values.mission)
@@ -129,66 +129,66 @@ async function main() {
     process.exit(1)
   }
 
-  const master = new Master(config, resolvedMission)
+  const manager = new Manager(config, resolvedMission)
 
   process.on('SIGINT', async () => {
     logger.info('\nShutting down...')
-    await master.stop()
+    await manager.stop()
     process.exit(0)
   })
 
   process.on('SIGTERM', async () => {
-    await master.stop()
+    await manager.stop()
     process.exit(0)
   })
 
   if (values.pause) {
     if (!(await isMasterHealthy())) {
-      logger.error('Error: Master is not running.')
+      logger.error('Error: Manager is not running.')
       process.exit(1)
     }
     sendControlCommand('pause')
-    logger.info('Pause command sent to master.')
+    logger.info('Pause command sent to manager.')
     process.exit(0)
   }
 
   if (values.resume) {
     if (!(await isMasterHealthy())) {
-      logger.error('Error: Master is not running.')
+      logger.error('Error: Manager is not running.')
       process.exit(1)
     }
     sendControlCommand('resume')
-    logger.info('Resume command sent to master.')
+    logger.info('Resume command sent to manager.')
     process.exit(0)
   }
 
   const cancelTaskId = getString(values.cancel)
   if (cancelTaskId) {
-    await master.cancelTask(cancelTaskId)
+    await manager.cancelTask(cancelTaskId)
     logger.info(`Cancelled task ${cancelTaskId}`)
     process.exit(0)
   }
 
   const addTaskDesc = getString(values.add)
   if (addTaskDesc) {
-    const task = await master.addTaskManually(addTaskDesc)
+    const task = await manager.addTaskManually(addTaskDesc)
     logger.info(`Created task ${task.id}: ${task.description}`)
     process.exit(0)
   }
 
-  await master.start()
+  await manager.start()
 
   const tuiInstance = startTUI({
-    emitter: master,
-    master,
+    emitter: manager,
+    manager,
     heartbeatIntervalMs: config.heartbeatInterval,
     onQuit: async () => {
-      await master.stop()
+      await manager.stop()
     },
   })
 
   const cleanup = async () => {
-    await master.stop()
+    await manager.stop()
     tuiInstance.unmount()
     process.exit(0)
   }
@@ -207,19 +207,19 @@ Usage:
   bun run src/index.ts [options]
 
 Options:
-  -m, --mission <text>      Set the master's mission
+  -m, --mission <text>      Set the manager's mission
   -i, --interval <seconds>  Set heartbeat interval (default: 30)
   -c, --concurrency <n>     Ignored in single mission mode (fixed to 1)
 
 Commands:
-  -s, --status              Show master status
+  -s, --status              Show manager status
   -t, --tasks               List current tasks
   -f, --failed              List failed tasks
   -a, --add <description>   Add a new task manually
   --cancel <taskId>         Cancel a task
   --answer <questionId> <answer>  Answer a pending question
-  -p, --pause               Pause the master
-  -r, --resume              Resume the master
+  -p, --pause               Pause the manager
+  -r, --resume              Resume the manager
   -h, --help                Show this help
 
 Examples:
@@ -231,10 +231,10 @@ Examples:
 }
 
 async function printStatus() {
-  const state = await loadMasterState()
+  const state = await loadManagerState()
   const healthy = await isMasterHealthy()
 
-  logger.userOutput('\n=== Master Status ===\n')
+  logger.userOutput('\n=== Manager Status ===\n')
   logger.userOutput(`Running: ${healthy ? `Yes (PID: ${healthy ? getMasterPid() : 'N/A'})` : 'No'}`)
   logger.userOutput(`Mission: ${state.mission || 'Not set. Start with --mission <text>.'}`)
   logger.userOutput(`Current Phase: ${state.currentPhase}`)

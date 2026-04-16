@@ -5,7 +5,7 @@ import {
   getTaskFailureReason,
   isActiveTask,
 } from '../../src/tui/components/detailPanelModel'
-import type { SlaveInfo, Task } from '../../src/types'
+import type { AgentInfo, Task } from '../../src/types'
 
 function task(status: Task['status']): Task {
   const now = new Date().toISOString()
@@ -23,7 +23,7 @@ function task(status: Task['status']): Task {
   }
 }
 
-function slave(overrides: Partial<SlaveInfo>): SlaveInfo {
+function agent(overrides: Partial<AgentInfo>): AgentInfo {
   return {
     id: 'worker-1',
     type: 'worker',
@@ -41,12 +41,12 @@ describe('detailPanelModel', () => {
     expect(isActiveTask(task('completed'))).toBe(false)
   })
 
-  test('仅返回当前任务的 busy slaves，并按启动时间排序', () => {
+  test('仅返回当前任务的 busy agents，并按启动时间排序', () => {
     const result = getActiveTaskSlaves('task-1', [
-      slave({ id: 'worker-2', startedAt: '2026-04-08T10:00:02.000Z' }),
-      slave({ id: 'worker-1', startedAt: '2026-04-08T10:00:01.000Z' }),
-      slave({ id: 'idle-worker', status: 'idle' }),
-      slave({ id: 'other-task', currentTask: 'task-2' }),
+      agent({ id: 'worker-2', startedAt: '2026-04-08T10:00:02.000Z' }),
+      agent({ id: 'worker-1', startedAt: '2026-04-08T10:00:01.000Z' }),
+      agent({ id: 'idle-worker', status: 'idle' }),
+      agent({ id: 'other-task', currentTask: 'task-2' }),
     ])
 
     expect(result.map((entry) => entry.id)).toEqual(['worker-1', 'worker-2'])
@@ -68,7 +68,7 @@ describe('detailPanelModel', () => {
       reviewHistory: [
         {
           attempt: 1,
-          slaveId: 'reviewer-1',
+          agentId: 'reviewer-1',
           timestamp: '2026-04-08T10:00:00.000Z',
           review: {
             taskId: 'task-1',

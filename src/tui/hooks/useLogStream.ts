@@ -47,7 +47,7 @@ export function useLogStream(
       if (event.taskId === taskId) {
         const nextEntry = {
           timestamp: event.timestamp,
-          slaveId: event.slaveId,
+          agentId: event.agentId,
           taskId: event.taskId,
           source: event.source,
           level: event.level,
